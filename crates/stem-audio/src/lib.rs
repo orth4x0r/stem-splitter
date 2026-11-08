@@ -62,6 +62,22 @@ impl AudioBuffer {
     pub fn subtract(&self, other: &AudioBuffer) -> AudioBuffer {
         todo!("stem-audio")
     }
+    /// Min/max envelope for waveform drawing: `buckets` pairs over the whole buffer, all channels.
+    pub fn peaks(&self, buckets: usize) -> Vec<(f32, f32)> {
+        todo!("stem-audio")
+    }
+    /// Sum of several equal-rate buffers (shorter ones are zero-padded). Used for re-mixing stems.
+    pub fn mix(buffers: &[&AudioBuffer]) -> AudioBuffer {
+        todo!("stem-audio")
+    }
+    /// Scale so the peak hits `target` (e.g. 0.99). Silence is left alone.
+    pub fn normalize(&mut self, target: f32) {
+        todo!("stem-audio")
+    }
+    /// Linear fade in/out over the given number of frames (avoids clicks on exported samples).
+    pub fn fade(&mut self, fade_in: usize, fade_out: usize) {
+        todo!("stem-audio")
+    }
     /// Peak absolute sample value.
     pub fn peak(&self) -> f32 {
         todo!("stem-audio")

@@ -103,6 +103,12 @@ pub enum Device {
     DirectMl(u32),
 }
 
+/// Devices the user can pick from, with display names (e.g. "AMD Radeon RX 6700S (DirectML)").
+/// Always includes [`Device::Cpu`]; DirectML adapters are listed on Windows only.
+pub fn list_devices() -> Vec<(Device, String)> {
+    todo!("stem-models")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Progress {
     Downloading {

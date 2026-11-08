@@ -45,6 +45,9 @@ pub struct Fetched {
 pub struct Fetcher {
     pub tools_dir: PathBuf,
     pub download_dir: PathBuf,
+    /// Passed to `yt-dlp --cookies-from-browser` (e.g. "firefox", "chrome", "edge"). Some X/Twitter
+    /// and age-restricted YouTube posts need a signed-in browser session.
+    pub cookies_from_browser: Option<String>,
 }
 
 impl Fetcher {
@@ -52,6 +55,7 @@ impl Fetcher {
         Self {
             tools_dir,
             download_dir,
+            cookies_from_browser: None,
         }
     }
 
@@ -81,6 +85,7 @@ impl Fetcher {
     }
 }
 
+/// Local file paths (and `file://` URLs) are passed straight through by [`Fetcher::fetch`].
 /// True when the URL obviously points at an audio file (by extension or content-type).
 pub fn is_direct_audio_url(url: &str) -> bool {
     todo!("stem-fetch")
