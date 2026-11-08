@@ -205,6 +205,19 @@ impl Player {
         self.shared = Some(shared);
     }
 
+    /// Play an extra source on the same output, next to the stems (MIDI audition). Opens the
+    /// device if needed; false when there is no audio output.
+    pub fn play_source(&mut self, source: impl Source + Send + 'static) -> bool {
+        if !self.ensure_sink() {
+            return false;
+        }
+        self.set_playing(false);
+        if let Some(sink) = &self.sink {
+            sink.mixer().add(source);
+        }
+        true
+    }
+
     pub fn unload(&mut self) {
         if let Some(sh) = self.shared.take() {
             sh.alive.store(false, Relaxed);

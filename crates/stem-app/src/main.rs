@@ -12,6 +12,7 @@ mod backend;
 mod demo;
 mod dragout;
 mod export;
+mod midi;
 mod paths;
 mod pipeline;
 mod player;

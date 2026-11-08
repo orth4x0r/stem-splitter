@@ -161,6 +161,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut seek = None;
     let mut new_sel: Option<(usize, Option<(f64, f64)>)> = None;
     let mut drag_out: Option<(std::path::PathBuf, PillAction)> = None;
+    let mut open_midi: Option<usize> = None;
     for i in 0..s.tracks.len() {
         let audible = s.audible(i);
         let selected_lane = s.selection.is_some() && s.sel_track == i;
@@ -285,6 +286,9 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             if buttons::letter_toggle(ui, "M", 28.0, tr.mute, theme::BAD, "Mute").clicked() {
                 tr.mute = !tr.mute;
             }
+            if super::midi::midi_button(ui, 28.0, color).clicked() {
+                open_midi = Some(i);
+            }
             ui.add_space(4.0);
             volume_slider(
                 ui,
@@ -346,6 +350,10 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     }
     if let Some((path, a)) = drag_out {
         app.file_pill(path, a);
+    }
+    if let Some(i) = open_midi {
+        let selection = app.session.as_ref().is_some_and(|s| s.sel_track == i);
+        super::midi::open_sheet(app, i, selection, ui.ctx());
     }
 
     ui.add_space(8.0);
@@ -604,6 +612,15 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                         .clicked()
                     {
                         app.export_selection(vec![sel_track]);
+                    }
+                    if Button::new("→ MIDI")
+                        .enabled(has)
+                        .tooltip("Turn the selected part of this stem into MIDI notes")
+                        .height(42.0)
+                        .show(ui)
+                        .clicked()
+                    {
+                        super::midi::open_sheet(app, sel_track, true, ui.ctx());
                     }
                     if Button::new("Export mix")
                         .icon(Icon::Headphones)

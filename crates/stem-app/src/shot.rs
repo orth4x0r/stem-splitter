@@ -3,7 +3,9 @@
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
 //! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
-//! queue, export.
+//! queue, export, midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set
+//! `STEM_MIDI_MODEL=nmp.onnx` and `ORT_DYLIB_PATH` to run the real model instead of the
+//! demo stand-in).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,7 +170,7 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "results-zoom" | "export" => {
+            "results" | "results-zoom" | "export" | "midi" | "midi-quantize" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -218,7 +220,16 @@ impl Shot {
                     });
                 }
                 app.player.seek(12.1);
-                if self.scene == "export" {
+                if self.scene.starts_with("midi") {
+                    if let Some(s) = &mut app.session {
+                        s.selection = None;
+                    }
+                    if self.scene == "midi-quantize" {
+                        app.midi_prefs.quantize =
+                            Some(stem_models::transcribe::QuantizeGrid::Sixteenth);
+                    }
+                    crate::views::midi::open_sheet(app, 2, false, _ctx);
+                } else if self.scene == "export" {
                     app.settings.export_without = true;
                     app.settings.export_format = crate::settings::ExportFormat::Flac24;
                     app.export_all_stems();

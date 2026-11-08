@@ -160,6 +160,9 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// The open "→ MIDI" sheet.
+    pub midi: Option<crate::midi::MidiSheet>,
+    pub midi_prefs: crate::midi::MidiPrefs,
 }
 
 impl StemApp {
@@ -198,6 +201,8 @@ impl StemApp {
             dragged_out: (Vec::new(), 0.0),
             ffmpeg: FfmpegState::default(),
             downloads_size: None,
+            midi: None,
+            midi_prefs: Default::default(),
         };
         if let Some(problem) = app.backend.problem.clone() {
             app.toasts.error("Backend not ready", problem);
@@ -933,6 +938,7 @@ impl eframe::App for StemApp {
 
         // Space toggles playback.
         if self.session.is_some()
+            && self.midi.is_none()
             && !ctx.egui_wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::Space))
         {

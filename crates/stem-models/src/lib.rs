@@ -3,6 +3,7 @@
 //! * [`registry`] lists the models we know how to run and where to download them.
 //! * [`ModelManager`] downloads/caches model files and the ONNX Runtime library.
 //! * [`load`] builds a [`Separator`] for a downloaded model on a [`Device`].
+//! * [`transcribe`] turns audio into MIDI notes (Spotify Basic Pitch) and writes `.mid` files.
 //!
 //! Module map:
 //!
@@ -18,7 +19,10 @@
 //! | `mdx`       | UVR MDX-Net separator |
 //! | `demucs`    | HTDemucs (STFT outside the graph) separator |
 //! | `roformer`  | complex-spectrogram separators: Mel-/BS-RoFormer and SCNet (STFT outside the graph) |
+//! | `basic_pitch` | audio -> note posteriorgrams -> notes (Basic Pitch port), behind [`transcribe`] |
+//! | `midi_file` | notes -> Standard MIDI File, quantisation, behind [`transcribe`] |
 
+mod basic_pitch;
 mod catalog;
 mod demucs;
 mod devices;
@@ -26,6 +30,7 @@ mod download;
 mod dsp;
 mod manager;
 mod mdx;
+mod midi_file;
 mod network;
 mod roformer;
 mod runtime;
@@ -39,6 +44,21 @@ pub use catalog::{find_model, registry};
 pub use devices::{GpuAdapter, gpu_adapters, list_devices};
 pub use download::DownloadStatus;
 pub use runtime::{DIRECTML_VERSION, ORT_VERSION};
+
+/// Audio to MIDI: [`transcribe::BasicPitch`] runs the model, [`transcribe::notes`] turns its
+/// posteriorgrams into notes (cheap, so re-run it whenever a threshold changes), and
+/// [`transcribe::write_midi`] / [`transcribe::quantize`] make the `.mid` file. The model file
+/// comes from [`ModelManager::download_transcriber`] with [`transcribe::BASIC_PITCH`].
+pub mod transcribe {
+    pub use crate::basic_pitch::{
+        ANNOTATIONS_FPS, BASIC_PITCH, BasicPitch, FFT_HOP, FrameNote, MIDI_OFFSET, N_CONTOUR_BINS,
+        N_NOTES, Note, NoteOptions, Posteriorgrams, SAMPLE_RATE, TranscriberInfo, frame_times,
+        model_input, notes, notes_in_frames,
+    };
+    pub use crate::midi_file::{
+        Beats, MidiOptions, PPQ, Quantize, QuantizeGrid, quantize, seconds_to_ticks, write_midi,
+    };
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
