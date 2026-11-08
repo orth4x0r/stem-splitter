@@ -1,0 +1,330 @@
+//! Model picker: one card per model with stems, size, license and download state.
+
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, CursorIcon, Rect, Sense, Stroke, StrokeKind, pos2, vec2,
+};
+
+use crate::app::StemApp;
+use crate::backend::human_bytes;
+use crate::theme;
+use crate::widgets::buttons::{self, Button};
+use crate::widgets::icons::{self, Icon};
+use crate::widgets::{overline, page_title, paint, progress};
+
+pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
+    page_title(
+        ui,
+        "Models",
+        "Pick the brain that does the splitting. Models download once and live on your machine.",
+    );
+    device_picker(app, ui);
+    ui.add_space(22.0);
+    overline(ui, "Separation models");
+    ui.add_space(6.0);
+
+    let models = app.backend.models.clone();
+    if models.is_empty() {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 200.0), Sense::hover());
+        crate::widgets::empty_state(
+            ui,
+            r,
+            Icon::Models,
+            "No models yet",
+            "The model registry is empty — stem-models isn't wired up.",
+        );
+        return;
+    }
+    let selected = app
+        .backend
+        .model(app.settings.model_id.as_deref())
+        .map(|m| m.id);
+    let t = ui.input(|i| i.time);
+    let gap = 16.0;
+    let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
+    let cw = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
+    let ch = 196.0;
+    for row in models.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for m in row {
+                let (rect, resp) = ui.allocate_exact_size(vec2(cw, ch), Sense::click());
+                let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+                let sel = selected == Some(m.id);
+                let h = ui
+                    .ctx()
+                    .animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+                let s = ui.ctx().animate_bool_with_time(resp.id.with("s"), sel, 0.2);
+                let downloading = app.model_downloads.get(m.id).copied();
+                let ready = app.backend.is_downloaded(m.id);
+                let rect = rect.translate(vec2(0.0, -2.0 * h));
+                {
+                    let p = ui.painter();
+                    paint::glow(
+                        p,
+                        rect.translate(vec2(0.0, 8.0)),
+                        CornerRadius::same(18),
+                        Color32::from_black_alpha(90),
+                        26.0,
+                    );
+                    if s > 0.0 {
+                        paint::glow(
+                            p,
+                            rect,
+                            CornerRadius::same(18),
+                            theme::alpha(theme::VIOLET, 0.35 * s),
+                            20.0,
+                        );
+                        paint::gradient_rect(
+                            p,
+                            rect,
+                            CornerRadius::same(18),
+                            0.0,
+                            1.0,
+                            Color32::from_white_alpha((255.0 * s) as u8),
+                        );
+                    }
+                    let inner = rect.shrink(1.5 * s);
+                    p.rect(
+                        inner,
+                        CornerRadius::same(17),
+                        theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
+                        Stroke::new(1.0, theme::alpha(theme::STROKE_HI, 1.0 - s)),
+                        StrokeKind::Inside,
+                    );
+
+                    // Stem colour band across the top.
+                    let band = Rect::from_min_size(
+                        inner.min + vec2(20.0, 18.0),
+                        vec2(inner.width() - 40.0, 4.0),
+                    );
+                    let n = m.stems.len().max(1) as f32;
+                    for (i, k) in m.stems.iter().enumerate() {
+                        let seg = Rect::from_min_size(
+                            pos2(band.left() + band.width() * i as f32 / n, band.top()),
+                            vec2(band.width() / n - 3.0, 4.0),
+                        );
+                        p.rect_filled(seg, CornerRadius::same(2), theme::stem_color(*k));
+                    }
+
+                    p.text(
+                        pos2(inner.left() + 20.0, inner.top() + 46.0),
+                        Align2::LEFT_CENTER,
+                        m.name,
+                        theme::bold(19.0),
+                        theme::TEXT,
+                    );
+                    if sel {
+                        let nw = p
+                            .layout_no_wrap(m.name.to_owned(), theme::bold(19.0), theme::TEXT)
+                            .size()
+                            .x;
+                        let r = Rect::from_min_size(
+                            pos2(inner.left() + 32.0 + nw, inner.top() + 35.0),
+                            vec2(84.0, 22.0),
+                        );
+                        paint::gradient_rect(
+                            p,
+                            r,
+                            CornerRadius::same(11),
+                            0.0,
+                            1.0,
+                            Color32::from_white_alpha(150),
+                        );
+                        icons::paint(
+                            p,
+                            Rect::from_center_size(
+                                pos2(r.left() + 14.0, r.center().y),
+                                vec2(11.0, 11.0),
+                            ),
+                            Icon::Check,
+                            Color32::WHITE,
+                        );
+                        p.text(
+                            pos2(r.left() + 25.0, r.center().y),
+                            Align2::LEFT_CENTER,
+                            "Selected",
+                            theme::semi(11.5),
+                            Color32::WHITE,
+                        );
+                    }
+                    let meta = format!(
+                        "{}  ·  {}  ·  {} Hz",
+                        human_bytes(m.size_bytes),
+                        m.license,
+                        m.sample_rate
+                    );
+                    p.text(
+                        pos2(inner.right() - 20.0, inner.top() + 46.0),
+                        Align2::RIGHT_CENTER,
+                        meta,
+                        theme::mono(11.5),
+                        theme::TEXT_FAINT,
+                    );
+                    p.text(
+                        pos2(inner.left() + 20.0, inner.top() + 72.0),
+                        Align2::LEFT_CENTER,
+                        crate::widgets::toast::elide(m.description, 70),
+                        theme::regular(13.0),
+                        theme::TEXT_DIM,
+                    );
+                }
+                // Stem chips.
+                let chips = Rect::from_min_size(rect.min + vec2(20.0, 92.0), vec2(cw - 40.0, 28.0));
+                let mut cu = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(chips)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                cu.spacing_mut().item_spacing.x = 6.0;
+                for k in &m.stems {
+                    buttons::chip(&mut cu, k.label(), theme::stem_color(*k), false);
+                }
+                // Footer: status + action.
+                let foot = Rect::from_min_max(
+                    pos2(rect.left() + 20.0, rect.bottom() - 58.0),
+                    pos2(rect.right() - 20.0, rect.bottom() - 18.0),
+                );
+                let p = ui.painter().clone();
+                if let Some(frac) = downloading {
+                    let bar = Rect::from_min_size(
+                        pos2(foot.left(), foot.center().y + 4.0),
+                        vec2(foot.width() - 60.0, 6.0),
+                    );
+                    progress::bar(&p, bar, frac, t);
+                    let label = frac.map_or("Downloading…".to_owned(), |f| {
+                        format!(
+                            "Downloading  {:.0}%  ·  {} of {}",
+                            f * 100.0,
+                            human_bytes((f as f64 * m.size_bytes as f64) as u64),
+                            human_bytes(m.size_bytes)
+                        )
+                    });
+                    p.text(
+                        pos2(foot.left(), foot.top() + 6.0),
+                        Align2::LEFT_CENTER,
+                        label,
+                        theme::mono(11.5),
+                        theme::TEXT_DIM,
+                    );
+                    progress::ring(
+                        &p,
+                        pos2(foot.right() - 20.0, foot.center().y + 2.0),
+                        12.0,
+                        3.0,
+                        frac,
+                        t,
+                    );
+                } else {
+                    let (dot, status) = if ready {
+                        (theme::GOOD, "Installed")
+                    } else {
+                        (theme::TEXT_FAINT, "Not downloaded")
+                    };
+                    p.circle_filled(pos2(foot.left() + 4.0, foot.center().y), 4.0, dot);
+                    p.text(
+                        pos2(foot.left() + 16.0, foot.center().y),
+                        Align2::LEFT_CENTER,
+                        status,
+                        theme::semi(12.5),
+                        if ready { theme::TEXT } else { theme::TEXT_DIM },
+                    );
+                    let br = Rect::from_min_max(
+                        pos2(foot.right() - 150.0, foot.top() + 2.0),
+                        pos2(foot.right(), foot.bottom() - 2.0),
+                    );
+                    let mut bu = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(br)
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    );
+                    if !ready {
+                        if Button::new("Download")
+                            .icon(Icon::Download)
+                            .height(32.0)
+                            .show(&mut bu)
+                            .clicked()
+                        {
+                            app.download_model(m.id);
+                        }
+                    } else if !sel
+                        && Button::new("Use this")
+                            .icon(Icon::Check)
+                            .height(32.0)
+                            .show(&mut bu)
+                            .clicked()
+                    {
+                        app.settings.model_id = Some(m.id.to_owned());
+                    }
+                }
+                if resp.clicked() {
+                    app.settings.model_id = Some(m.id.to_owned());
+                }
+            }
+        });
+        ui.add_space(gap);
+    }
+}
+
+pub fn device_picker(app: &mut StemApp, ui: &mut egui::Ui) {
+    overline(ui, "Run on");
+    ui.add_space(6.0);
+    let devices = app.backend.devices.clone();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+        for (dev, name) in devices {
+            let sel = app.settings.device == dev;
+            let gpu = matches!(dev, stem_models::Device::DirectMl(_));
+            let galley = ui
+                .painter()
+                .layout_no_wrap(name.clone(), theme::semi(13.0), theme::TEXT);
+            let (r, resp) =
+                ui.allocate_exact_size(vec2(galley.size().x + 58.0, 44.0), Sense::click());
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+            let h = ui
+                .ctx()
+                .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+            let s = ui
+                .ctx()
+                .animate_bool_with_time(resp.id.with("s"), sel, 0.18);
+            let p = ui.painter();
+            let accent = if gpu { theme::GOOD } else { theme::CYAN };
+            if s > 0.0 {
+                paint::glow(
+                    p,
+                    r,
+                    CornerRadius::same(12),
+                    theme::alpha(accent, 0.25 * s),
+                    12.0,
+                );
+            }
+            p.rect(
+                r,
+                CornerRadius::same(12),
+                theme::lerp_color(theme::CARD, theme::alpha(accent, 0.14), s.max(h * 0.3)),
+                Stroke::new(1.0, theme::lerp_color(theme::STROKE_HI, accent, s)),
+                StrokeKind::Inside,
+            );
+            let ir = Rect::from_center_size(pos2(r.left() + 22.0, r.center().y), vec2(17.0, 17.0));
+            icons::paint(
+                p,
+                ir,
+                if gpu {
+                    Icon::Chip
+                } else if dev == stem_models::Device::Auto {
+                    Icon::Sparkle
+                } else {
+                    Icon::Settings
+                },
+                if sel { accent } else { theme::TEXT_DIM },
+            );
+            p.galley(
+                pos2(r.left() + 40.0, r.center().y - galley.size().y / 2.0),
+                galley,
+                if sel { Color32::WHITE } else { theme::TEXT_DIM },
+            );
+            if resp.clicked() {
+                app.settings.device = dev;
+            }
+        }
+    });
+}

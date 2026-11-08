@@ -17,10 +17,12 @@ anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing-subscriber = "0.3"
-eframe = "0.37"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+eframe = { version = "0.37", features = ["persistence"] }
 egui_extras = "0.37"
 rodio = "0.23"
 rfd = "0.18"
 directories = "6"
 crossbeam-channel = "0.5"
+# Screenshot mode (STEM_SHOT) saves PNGs.
+image = { version = "0.25", default-features = false, features = ["png"] }
