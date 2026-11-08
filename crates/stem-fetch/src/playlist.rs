@@ -110,7 +110,10 @@ pub(crate) fn args(url: &str, cookies_from_browser: Option<&str>) -> Vec<String>
     .iter()
     .map(|s| s.to_string())
     .collect();
-    if let Some(b) = cookies_from_browser.map(str::trim).filter(|b| !b.is_empty()) {
+    if let Some(b) = cookies_from_browser
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+    {
         a.push("--cookies-from-browser".into());
         a.push(b.into());
     }
@@ -224,7 +227,10 @@ mod tests {
     fn args_end_with_url() {
         let a = args("https://y/p", Some("firefox"));
         assert!(a.contains(&"--flat-playlist".to_string()));
-        assert!(a.windows(2).any(|w| w[0] == "--cookies-from-browser" && w[1] == "firefox"));
+        assert!(
+            a.windows(2)
+                .any(|w| w[0] == "--cookies-from-browser" && w[1] == "firefox")
+        );
         assert_eq!(a.last().map(String::as_str), Some("https://y/p"));
     }
 }

@@ -1,12 +1,16 @@
 //! Screens. `draw` lays out the chrome (header, sidebar) and dispatches to the current page.
 
 mod chrome;
+mod export_dialog;
 mod home;
 mod library;
 mod models;
+mod models_dl;
 mod progress;
+mod queue;
 mod results;
 mod settings;
+mod settings_tools;
 
 use eframe::egui::{self, Margin};
 
@@ -42,6 +46,14 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
                             Page::Split => {
                                 if app.job.is_some() {
                                     progress::page(app, ui);
+                                    if !app.queue.is_empty() {
+                                        ui.add_space(18.0);
+                                        let w = ui.available_width().min(1000.0);
+                                        ui.vertical_centered(|ui| {
+                                            ui.set_max_width(w);
+                                            queue::panel(app, ui);
+                                        });
+                                    }
                                 } else if app.session.is_some() {
                                     results::page(app, ui);
                                 } else {
@@ -54,6 +66,8 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
                         });
                 });
         });
+
+    export_dialog::show(app, ui.ctx());
 
     if app.drop_hover {
         chrome::drop_overlay(ui.ctx());

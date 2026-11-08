@@ -9,9 +9,12 @@
 mod app;
 mod backend;
 mod demo;
+mod dragout;
+mod export;
 mod paths;
 mod pipeline;
 mod player;
+mod queue;
 mod settings;
 mod shot;
 mod theme;

@@ -28,6 +28,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         ui.set_max_width(w);
         let free = ui.ctx().content_rect().height() - 64.0 - 52.0 - 540.0;
+        // With a batch queue below, start at the top so the queue stays in view.
+        let free = if app.queue.is_empty() { free } else { 0.0 };
         ui.add_space((free / 2.0).clamp(8.0, 200.0));
         let (rect, _) = ui.allocate_exact_size(vec2(w, 420.0), Sense::hover());
         let painter = ui.painter().clone();

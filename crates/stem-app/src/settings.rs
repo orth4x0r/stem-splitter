@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use stem_audio::WavFormat;
+use stem_audio::{AudioFormat, WavFormat};
 use stem_models::{Device, StemKind};
 
 const KEY: &str = "stem-splitter/settings";
@@ -35,6 +35,49 @@ impl WavChoice {
     }
 }
 
+/// Format for exported stems and samples (the library's own stem files stay WAV).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExportFormat {
+    Wav16,
+    #[default]
+    Wav24,
+    Wav32f,
+    Flac16,
+    Flac24,
+    Mp3_320,
+}
+
+impl ExportFormat {
+    pub const ALL: [ExportFormat; 6] = [
+        ExportFormat::Wav16,
+        ExportFormat::Wav24,
+        ExportFormat::Wav32f,
+        ExportFormat::Flac16,
+        ExportFormat::Flac24,
+        ExportFormat::Mp3_320,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportFormat::Wav16 => "WAV 16-bit",
+            ExportFormat::Wav24 => "WAV 24-bit",
+            ExportFormat::Wav32f => "WAV 32-bit float",
+            ExportFormat::Flac16 => "FLAC 16-bit",
+            ExportFormat::Flac24 => "FLAC 24-bit",
+            ExportFormat::Mp3_320 => "MP3 320 kbps",
+        }
+    }
+    pub fn audio_format(self) -> AudioFormat {
+        match self {
+            ExportFormat::Wav16 => AudioFormat::Wav(WavFormat::Pcm16),
+            ExportFormat::Wav24 => AudioFormat::Wav(WavFormat::Pcm24),
+            ExportFormat::Wav32f => AudioFormat::Wav(WavFormat::Float32),
+            ExportFormat::Flac16 => AudioFormat::Flac { bits: 16 },
+            ExportFormat::Flac24 => AudioFormat::Flac { bits: 24 },
+            ExportFormat::Mp3_320 => AudioFormat::Mp3 { kbps: 320 },
+        }
+    }
+}
+
 /// Browsers yt-dlp can borrow cookies from. Firefox first: on Windows, Chromium-based browsers
 /// lock and encrypt their cookie store, so yt-dlp usually can't read it while they run.
 pub const COOKIE_BROWSERS: [&str; 8] = [
@@ -58,6 +101,12 @@ pub struct HistoryEntry {
 pub struct Settings {
     pub output_dir: PathBuf,
     pub wav: WavChoice,
+    /// Exported stems and samples.
+    pub export_format: ExportFormat,
+    /// File names for "Export stems", e.g. "{track} - {stem}".
+    pub export_template: String,
+    /// "Export stems" also writes "all but X" mixes.
+    pub export_without: bool,
     pub cookies_from_browser: Option<String>,
     pub model_id: Option<String>,
     pub device: Device,
@@ -75,6 +124,9 @@ impl Default for Settings {
         Self {
             output_dir: crate::paths::default_output_dir(),
             wav: WavChoice::default(),
+            export_format: ExportFormat::default(),
+            export_template: crate::export::DEFAULT_TEMPLATE.to_owned(),
+            export_without: false,
             cookies_from_browser: None,
             model_id: None,
             device: Device::Auto,
@@ -143,5 +195,7 @@ mod tests {
         let partial: Settings = serde_json::from_str("{\"wav\":\"Pcm16\"}").unwrap();
         assert_eq!(partial.wav, WavChoice::Pcm16);
         assert!(partial.normalize_samples);
+        assert_eq!(partial.export_format, ExportFormat::Wav24);
+        assert_eq!(partial.export_template, "{track} - {stem}");
     }
 }

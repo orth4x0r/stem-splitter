@@ -232,29 +232,28 @@ fn download_inner(
         .map_err(|e| ModelError::Download(format!("{url}: {e}")))?;
     let status = resp.status();
     let mut hasher = Sha256::new();
-    let (mut file, mut done, total) = if existing > 0
-        && status == reqwest::StatusCode::PARTIAL_CONTENT
-    {
-        let (start, total) = content_range(&resp).unwrap_or((existing, None));
-        if start != existing {
+    let (mut file, mut done, total) =
+        if existing > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+            let (start, total) = content_range(&resp).unwrap_or((existing, None));
+            if start != existing {
+                return Err(Retry::FromScratch);
+            }
+            let total = total.or_else(|| resp.content_length().map(|n| n + existing));
+            if sha256.is_some() {
+                hash_into(part, &mut hasher)?;
+            }
+            let file = OpenOptions::new().append(true).open(part)?;
+            (file, existing, total)
+        } else if existing > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            // Usually the .part already holds the whole file (or the file changed upstream).
             return Err(Retry::FromScratch);
-        }
-        let total = total.or_else(|| resp.content_length().map(|n| n + existing));
-        if sha256.is_some() {
-            hash_into(part, &mut hasher)?;
-        }
-        let file = OpenOptions::new().append(true).open(part)?;
-        (file, existing, total)
-    } else if existing > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-        // Usually the .part already holds the whole file (or the file changed upstream).
-        return Err(Retry::FromScratch);
-    } else if status.is_success() {
-        // Fresh download, or a server that ignores Range and sends everything again.
-        let total = resp.content_length().filter(|&n| n > 0);
-        (File::create(part)?, 0, total)
-    } else {
-        return Err(ModelError::Download(format!("{url}: HTTP {status}")).into());
-    };
+        } else if status.is_success() {
+            // Fresh download, or a server that ignores Range and sends everything again.
+            let total = resp.content_length().filter(|&n| n > 0);
+            (File::create(part)?, 0, total)
+        } else {
+            return Err(ModelError::Download(format!("{url}: HTTP {status}")).into());
+        };
     let resumed_from = done;
     let mut speed = Speed::new(done);
     let mut st = DownloadStatus {

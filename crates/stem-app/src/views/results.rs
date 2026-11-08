@@ -10,6 +10,7 @@ use crate::app::StemApp;
 use crate::backend::{mmss, mmss_ms};
 use crate::theme;
 use crate::widgets::buttons::{self, Button};
+use crate::widgets::drag_handle::{self, PillAction};
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::paint;
 use crate::widgets::toast::elide;
@@ -133,6 +134,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let any_solo = s.any_solo();
     let mut seek = None;
     let mut new_sel: Option<(usize, Option<(f64, f64)>)> = None;
+    let mut drag_out: Option<(std::path::PathBuf, PillAction)> = None;
     for i in 0..s.tracks.len() {
         let audible = s.audible(i);
         let selected_lane = s.selection.is_some() && s.sel_track == i;
@@ -236,6 +238,18 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 );
             }
         }
+        // Drag the stem file straight into a DAW / Explorer.
+        let (label, tip) = drag_pill_text();
+        let pill = drag_handle::pill_rect(
+            ctrl.right(),
+            ctrl.top() + 30.0,
+            drag_handle::pill_width(ui, label),
+        );
+        if let (_, Some(a)) =
+            drag_handle::drag_pill(ui, pill, Id::unique(("drag", i)), label, color, tip)
+        {
+            drag_out = Some((tr.path.clone(), a));
+        }
         cui.add_space(44.0);
         cui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -297,6 +311,9 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     if let Some(t) = seek {
         app.player.seek(t);
     }
+    if let Some((path, a)) = drag_out {
+        app.file_pill(path, a);
+    }
 
     ui.add_space(8.0);
     if app.player.error.is_some() {
@@ -328,6 +345,18 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     if new_split {
         app.player.unload();
         app.session = None;
+    }
+}
+
+/// Label and tooltip for drag pills: a real drag on Windows, "reveal" elsewhere.
+fn drag_pill_text() -> (&'static str, &'static str) {
+    if crate::dragout::NATIVE {
+        (
+            "Drag",
+            "Drag into your DAW or a folder · click to show in Explorer",
+        )
+    } else {
+        ("Show", "Show the file in its folder")
     }
 }
 
@@ -550,6 +579,30 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                         .clicked()
                     {
                         app.export_selection(audible.clone());
+                    }
+                    if has {
+                        let label = if crate::dragout::NATIVE {
+                            "Drag sample"
+                        } else {
+                            "Show sample"
+                        };
+                        let w = drag_handle::pill_width(ui, label) + 8.0;
+                        let (r, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
+                        let tip = if crate::dragout::NATIVE {
+                            "Drag the selected sample into your DAW (saved to Samples first)"
+                        } else {
+                            "Save the selected sample and show it in its folder"
+                        };
+                        if let (_, Some(a)) = drag_handle::drag_pill(
+                            ui,
+                            r,
+                            Id::unique("drag-sample"),
+                            label,
+                            sel_kind.map_or(theme::VIOLET, theme::stem_color),
+                            tip,
+                        ) {
+                            app.selection_pill(vec![sel_track], a);
+                        }
                     }
                 });
             });

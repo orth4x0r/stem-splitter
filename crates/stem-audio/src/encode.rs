@@ -11,9 +11,13 @@ use crate::{AudioBuffer, AudioError, Result, WavFormat, Xorshift32, sanitize, wr
 pub enum AudioFormat {
     Wav(WavFormat),
     /// Lossless FLAC at 16 or 24 bits per sample.
-    Flac { bits: u8 },
+    Flac {
+        bits: u8,
+    },
     /// Constant-bitrate MP3 (MPEG-1 Layer III). `kbps` is one of 64..=320.
-    Mp3 { kbps: u16 },
+    Mp3 {
+        kbps: u16,
+    },
 }
 
 impl AudioFormat {
@@ -72,7 +76,9 @@ pub fn write_flac(path: &Path, buf: &AudioBuffer, bits: u8) -> Result<()> {
 
     check_buffer(buf)?;
     if !matches!(bits, 16 | 24) {
-        return Err(AudioError::Encode(format!("FLAC: unsupported bit depth {bits}")));
+        return Err(AudioError::Encode(format!(
+            "FLAC: unsupported bit depth {bits}"
+        )));
     }
     if buf.n_channels() > 8 {
         return Err(AudioError::Encode("FLAC: at most 8 channels".into()));

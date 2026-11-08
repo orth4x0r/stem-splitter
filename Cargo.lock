@@ -4469,6 +4469,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "image",
+ "raw-window-handle",
  "rfd",
  "rodio",
  "serde",
@@ -4478,6 +4479,7 @@ dependencies = [
  "stem-models",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]

@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use crossbeam_channel::Sender;
 use eframe::egui;
-use stem_audio::{AudioBuffer, WavFormat};
+use stem_audio::{AudioBuffer, AudioFormat, WavFormat};
 use stem_fetch::{FetchProgress, Fetcher};
-use stem_models::{Device, ModelInfo, ModelManager, Progress, StemKind};
+use stem_models::{Device, DownloadStatus, ModelInfo, ModelManager, Progress, StemKind};
 
 use crate::backend::guard;
 use crate::paths::{AppPaths, sanitize_file_name};
@@ -135,11 +135,16 @@ pub enum JobEvent {
 
 pub enum AppEvent {
     Job(u64, JobEvent),
-    ModelProgress(String, Option<f32>),
+    ModelProgress(String, DownloadStatus),
     ModelDone(String, Result<(), String>),
-    Notice(Result<String, String>),
     YtDlpUpdated(Result<String, String>),
     SampleExported(Result<PathBuf, String>),
+    /// Queue item id, and the playlist's (title, url) entries.
+    PlaylistExpanded(u64, Result<Vec<(Option<String>, String)>, String>),
+    FfmpegProgress(Option<f32>, String),
+    FfmpegDone(Result<PathBuf, String>),
+    /// Message and destination folder.
+    StemsExported(Result<(String, PathBuf), String>),
 }
 
 /// Sends events and wakes the UI.
@@ -374,26 +379,38 @@ fn run_demo(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
 
 // ---- smaller tasks -------------------------------------------------------------------------
 
-pub fn spawn_model_download(info: ModelInfo, models_dir: PathBuf, demo: bool, n: Notifier) {
+/// Download a model; `cancel` pauses it (the partial file is kept and resumed next time).
+pub fn spawn_model_download(
+    info: ModelInfo,
+    models_dir: PathBuf,
+    demo: bool,
+    cancel: Arc<AtomicBool>,
+    n: Notifier,
+) {
     std::thread::spawn(move || {
         let id = info.id.to_owned();
         let result = guard("model download", || {
             if demo {
-                for i in 0..=100 {
-                    n.send(AppEvent::ModelProgress(id.clone(), Some(i as f32 / 100.0)));
+                let total = info.size_bytes.max(1);
+                for i in 0..=100u64 {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_owned());
+                    }
+                    let st = DownloadStatus {
+                        done: total * i / 100,
+                        total: Some(total),
+                        bytes_per_sec: total as f64 / 2.5,
+                        resumed_from: 0,
+                    };
+                    n.send(AppEvent::ModelProgress(id.clone(), st));
                     std::thread::sleep(Duration::from_millis(25));
                 }
                 return Ok(());
             }
             let mgr = ModelManager::new(models_dir);
-            let cancel = AtomicBool::new(false);
-            mgr.download(
+            mgr.download_with_status(
                 &info,
-                &mut |p| {
-                    if let Progress::Downloading { fraction } = p {
-                        n.send(AppEvent::ModelProgress(id.clone(), fraction));
-                    }
-                },
+                &mut |st| n.send(AppEvent::ModelProgress(id.clone(), *st)),
                 &cancel,
             )
             .map(|_| ())
@@ -426,58 +443,112 @@ pub struct SampleExport {
     pub end: f64,
     pub fade_ms: f32,
     pub normalize: bool,
-    pub format: WavFormat,
+    pub format: AudioFormat,
     pub path: PathBuf,
+}
+
+/// Slice + fade + normalise + write one sample (blocking). Returns the written path.
+pub fn render_sample(job: &SampleExport) -> Result<PathBuf, String> {
+    let parts: Vec<AudioBuffer> = job
+        .include
+        .iter()
+        .filter_map(|&i| job.stems.get(i))
+        .map(|b| {
+            let sr = b.sample_rate as f64;
+            b.slice((job.start * sr) as usize, (job.end * sr) as usize)
+        })
+        .collect();
+    let mut clip = match parts.len() {
+        0 => return Err("nothing selected".to_owned()),
+        1 => parts.into_iter().next().unwrap_or_default(),
+        _ => AudioBuffer::mix(&parts.iter().collect::<Vec<_>>()),
+    };
+    let sr = clip.sample_rate as f64;
+    let fade = (job.fade_ms as f64 / 1000.0 * sr) as usize;
+    let fade = fade.min(clip.frames() / 2);
+    clip.fade(fade, fade);
+    if job.normalize {
+        clip.normalize(0.989); // -0.1 dBFS
+    }
+    if let Some(dir) = job.path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    stem_audio::write_audio(&job.path, &clip, job.format).map_err(|e| e.to_string())?;
+    Ok(job.path.clone())
 }
 
 /// Slice + fade + normalise + write one sample.
 pub fn spawn_sample_export(job: SampleExport, n: Notifier) {
     std::thread::spawn(move || {
-        let result = guard("export sample", || {
-            let parts: Vec<AudioBuffer> = job
-                .include
-                .iter()
-                .filter_map(|&i| job.stems.get(i))
-                .map(|b| {
-                    let sr = b.sample_rate as f64;
-                    b.slice((job.start * sr) as usize, (job.end * sr) as usize)
-                })
-                .collect();
-            let mut clip = match parts.len() {
-                0 => return Err("nothing selected".to_owned()),
-                1 => parts.into_iter().next().unwrap_or_default(),
-                _ => AudioBuffer::mix(&parts.iter().collect::<Vec<_>>()),
-            };
-            let sr = clip.sample_rate as f64;
-            let fade = (job.fade_ms as f64 / 1000.0 * sr) as usize;
-            let fade = fade.min(clip.frames() / 2);
-            clip.fade(fade, fade);
-            if job.normalize {
-                clip.normalize(0.989); // -0.1 dBFS
-            }
-            if let Some(dir) = job.path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            stem_audio::write_wav(&job.path, &clip, job.format).map_err(|e| e.to_string())?;
-            Ok(job.path.clone())
-        });
+        let result = guard("export sample", || render_sample(&job));
         n.send(AppEvent::SampleExported(result.and_then(|r| r)));
     });
 }
 
-/// Copy the written stems into another folder.
-pub fn spawn_copy_stems(files: Vec<PathBuf>, dest: PathBuf, n: Notifier) {
+/// List a playlist's entries for the queue.
+pub fn spawn_playlist_expand(
+    item: u64,
+    url: String,
+    paths: AppPaths,
+    cookies: Option<String>,
+    demo: bool,
+    n: Notifier,
+) {
     std::thread::spawn(move || {
-        let count = files.len();
-        let result = (|| -> Result<String, String> {
-            std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-            for f in &files {
-                let name = f.file_name().ok_or("bad file name")?;
-                std::fs::copy(f, dest.join(name)).map_err(|e| format!("{}: {e}", f.display()))?;
+        let result = guard(
+            "playlist",
+            || -> Result<Vec<(Option<String>, String)>, String> {
+                if demo {
+                    std::thread::sleep(Duration::from_millis(600));
+                    return Ok((1..=3)
+                        .map(|i| {
+                            (
+                                Some(format!("Playlist track {i}")),
+                                format!("https://www.youtube.com/watch?v=demo{i}"),
+                            )
+                        })
+                        .collect());
+                }
+                let mut f = Fetcher::new(paths.tools.clone(), paths.downloads.clone());
+                f.cookies_from_browser = cookies;
+                let never = AtomicBool::new(false);
+                let list = f.expand_playlist(&url, &never).map_err(|e| e.to_string())?;
+                Ok(list.entries.into_iter().map(|e| (e.title, e.url)).collect())
+            },
+        );
+        n.send(AppEvent::PlaylistExpanded(item, result.and_then(|r| r)));
+    });
+}
+
+/// Install ffmpeg into the tools folder (Windows; elsewhere this reports how to get it).
+pub fn spawn_ffmpeg_install(paths: AppPaths, demo: bool, n: Notifier) {
+    std::thread::spawn(move || {
+        let result = guard("ffmpeg install", || -> Result<PathBuf, String> {
+            if demo {
+                for i in 0..=50 {
+                    n.send(AppEvent::FfmpegProgress(
+                        Some(i as f32 / 50.0),
+                        "Downloading ffmpeg".into(),
+                    ));
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                return Ok(paths.tools.join("ffmpeg.exe"));
             }
-            Ok(format!("Exported {count} stems to {}", dest.display()))
-        })();
-        n.send(AppEvent::Notice(result));
+            let f = Fetcher::new(paths.tools.clone(), paths.downloads.clone());
+            let mut msg = String::from("Starting");
+            f.ensure_ffmpeg(&mut |p| match p {
+                FetchProgress::Preparing(m) => {
+                    msg = m;
+                    n.send(AppEvent::FfmpegProgress(None, msg.clone()));
+                }
+                FetchProgress::Downloading { fraction, .. } => {
+                    n.send(AppEvent::FfmpegProgress(fraction, msg.clone()));
+                }
+                FetchProgress::Converting => {}
+            })
+            .map_err(|e| e.to_string())
+        });
+        n.send(AppEvent::FfmpegDone(result.and_then(|r| r)));
     });
 }
 
