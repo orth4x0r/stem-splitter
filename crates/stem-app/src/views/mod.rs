@@ -4,6 +4,7 @@ mod analysis_bar;
 mod chrome;
 mod export_dialog;
 mod home;
+mod kit;
 mod library;
 mod models;
 mod models_dl;
@@ -12,6 +13,7 @@ mod queue;
 mod results;
 mod settings;
 mod settings_tools;
+mod transform;
 
 use eframe::egui::{self, Margin};
 
@@ -69,6 +71,7 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
         });
 
     export_dialog::show(app, ui.ctx());
+    kit::show(app, ui.ctx());
 
     if app.drop_hover {
         chrome::drop_overlay(ui.ctx());

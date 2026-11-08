@@ -8,10 +8,12 @@
 
 mod analysis;
 mod app;
+mod audition;
 mod backend;
 mod demo;
 mod dragout;
 mod export;
+mod fx;
 mod paths;
 mod pipeline;
 mod player;

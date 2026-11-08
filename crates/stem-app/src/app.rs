@@ -160,6 +160,8 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// Transform renders, kit extraction and their audition player.
+    pub fx: crate::fx::Fx,
 }
 
 impl StemApp {
@@ -198,6 +200,7 @@ impl StemApp {
             dragged_out: (Vec::new(), 0.0),
             ffmpeg: FfmpegState::default(),
             downloads_size: None,
+            fx: crate::fx::Fx::new(cc.egui_ctx.clone()),
         };
         if let Some(problem) = app.backend.problem.clone() {
             app.toasts.error("Backend not ready", problem);
@@ -922,6 +925,7 @@ impl eframe::App for StemApp {
         let now = ctx.input(|i| i.time);
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
         self.pump(now);
+        crate::fx::poll(self);
         self.handle_drops(&ctx, now);
         self.tick_queue(now);
         self.sync_player(dt);
@@ -963,6 +967,7 @@ impl eframe::App for StemApp {
             || self.export_busy
             || self.queue.has_work()
             || self.toasts.is_animating()
+            || self.fx.busy()
             || self
                 .session
                 .as_ref()

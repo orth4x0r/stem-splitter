@@ -4,7 +4,10 @@
 
 pub mod analysis;
 mod encode;
+pub mod oneshot;
+pub mod onsets;
 pub mod stft;
+pub mod stretch;
 
 pub use encode::{AudioFormat, write_audio, write_flac, write_mp3};
 
@@ -20,6 +23,9 @@ pub enum AudioError {
     Resample(String),
     #[error("encode: {0}")]
     Encode(String),
+    /// A long render was stopped through its cancel flag.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, AudioError>;

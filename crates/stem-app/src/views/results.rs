@@ -161,6 +161,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut seek = None;
     let mut new_sel: Option<(usize, Option<(f64, f64)>)> = None;
     let mut drag_out: Option<(std::path::PathBuf, PillAction)> = None;
+    let mut open_kit = None;
     for i in 0..s.tracks.len() {
         let audible = s.audible(i);
         let selected_lane = s.selection.is_some() && s.sel_track == i;
@@ -276,6 +277,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         {
             drag_out = Some((tr.path.clone(), a));
         }
+        if tr.kind == stem_models::StemKind::Drums
+            && super::kit::kit_button(ui, pill.left() - 6.0, pill.center().y, i, color)
+        {
+            open_kit = Some(i);
+        }
         cui.add_space(44.0);
         cui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -347,6 +353,10 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     if let Some((path, a)) = drag_out {
         app.file_pill(path, a);
     }
+    if let Some(i) = open_kit {
+        let now = ui.input(|inp| inp.time);
+        crate::fx::open_kit(app, i, now);
+    }
 
     ui.add_space(8.0);
     if app.player.error.is_some() {
@@ -368,6 +378,10 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 .color(theme::TEXT_FAINT),
         );
     }
+
+    ui.add_space(18.0);
+    super::transform::panel(app, ui);
+    ui.add_space(8.0);
 
     if open_folder {
         app.open_folder(&out_dir);
