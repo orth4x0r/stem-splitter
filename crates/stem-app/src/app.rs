@@ -11,7 +11,7 @@ use stem_audio::AudioBuffer;
 use stem_models::{DownloadStatus, StemKind};
 
 use crate::backend::Backend;
-use crate::paths::{AppPaths, sanitize_file_name};
+use crate::paths::AppPaths;
 use crate::pipeline::{
     self, AppEvent, InputSource, JobEvent, JobOutput, JobRequest, Notifier, Stage,
 };
@@ -75,6 +75,10 @@ pub struct Session {
     pub selection: Option<(f64, f64)>,
     /// Lane the selection was made on (default export target).
     pub sel_track: usize,
+    /// Tempo, key and beat grid.
+    pub analysis: Option<crate::analysis::TrackAnalysis>,
+    /// Visible window of the waveforms (zoom / scroll).
+    pub timeline: crate::timeline::Timeline,
 }
 
 impl Session {
@@ -425,6 +429,19 @@ impl StemApp {
         }
         let audio = Arc::new(audio);
         self.player.load(audio.clone());
+        let mut analysis = out.analysis;
+        // Keep a halve / double the user picked last time.
+        if let (Some(a), Some(saved)) = (
+            &mut analysis,
+            self.settings
+                .history
+                .iter()
+                .find(|h| h.out_dir == out.out_dir)
+                .and_then(|h| h.bpm),
+        ) {
+            a.apply_saved_bpm(saved);
+        }
+        let timeline = crate::timeline::Timeline::new(duration, audio.clone());
         self.session = Some(Session {
             title: out.title,
             out_dir: out.out_dir,
@@ -433,6 +450,8 @@ impl StemApp {
             audio,
             selection: None,
             sel_track: 0,
+            analysis,
+            timeline,
         });
     }
 
@@ -545,10 +564,23 @@ impl StemApp {
         } else {
             "Mix".to_owned()
         };
-        let stamp = crate::backend::mmss_ms(a)
-            .replace(':', "m")
-            .replace('.', "s");
-        let file = sanitize_file_name(&format!("{} - {} {}", s.title, name, stamp));
+        // Zero-crossing edges, or an exact N-bar loop when the selection is close to one.
+        let parts: Vec<&AudioBuffer> = include.iter().filter_map(|&i| s.audio.get(i)).collect();
+        let grid = s.analysis.as_ref().and_then(|x| x.grid.as_ref());
+        let (f0, f1, bars) =
+            crate::analysis::export_bounds(&parts, a, b, grid, self.settings.export_loop_bars);
+        let sr = parts.first().map_or(44_100.0, |p| p.sample_rate as f64);
+        // Half a frame in, so the export's `(t * sr) as usize` lands on exactly these frames.
+        let (a, b) = ((f0 as f64 + 0.5) / sr, (f1 as f64 + 0.5) / sr);
+        let ana = s.analysis.as_ref();
+        let file = crate::analysis::sample_file_name(
+            &s.title,
+            &name,
+            ana.and_then(|x| x.bpm()),
+            ana.and_then(|x| x.key.as_ref()),
+            a,
+            bars,
+        );
         let format = self.settings.export_format.audio_format();
         let path = s
             .out_dir
@@ -769,6 +801,9 @@ impl StemApp {
                 self.job = None;
                 self.downloads_size = None;
                 let n = out.stems.len();
+                let (bpm, key) = out.analysis.as_ref().map_or((None, None), |a| {
+                    (a.bpm(), a.key.as_ref().map(|k| k.name()))
+                });
                 if !reopening {
                     let entry = HistoryEntry {
                         title: out.title.clone(),
@@ -778,6 +813,8 @@ impl StemApp {
                         out_dir: out.out_dir.clone(),
                         when: now_unix(),
                         duration_secs: out.stems.first().map_or(0.0, |s| s.audio.duration_secs()),
+                        bpm,
+                        key,
                     };
                     self.settings.push_history(entry.clone());
                     self.toasts
@@ -788,6 +825,15 @@ impl StemApp {
                         item.status = ItemStatus::Done(Box::new(entry));
                         return;
                     }
+                } else if let Some(h) = self
+                    .settings
+                    .history
+                    .iter_mut()
+                    .find(|h| h.out_dir == out.out_dir)
+                {
+                    // Entries from before analysis existed get their tempo / key now.
+                    h.bpm = h.bpm.or(bpm);
+                    h.key = h.key.take().or(key);
                 }
                 self.open_session(*out);
             }

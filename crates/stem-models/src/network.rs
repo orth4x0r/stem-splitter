@@ -23,6 +23,14 @@ pub(crate) struct TensorOut {
 pub(crate) trait Network: Send {
     /// Declared input shapes in graph order; `-1` marks a dynamic dimension.
     fn input_shapes(&self) -> Vec<Vec<i64>>;
+    /// Input names in graph order (empty when the backend has none, e.g. test stubs).
+    fn input_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Output names in graph order (empty when the backend has none).
+    fn output_names(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Run with inputs in graph order; outputs come back in graph order.
     fn run(&mut self, inputs: &[TensorIn<'_>]) -> Result<Vec<TensorOut>>;
     /// Where it runs.
@@ -48,6 +56,22 @@ impl Network for OrtNetwork {
                 ort::value::ValueType::Tensor { shape, .. } => shape.to_vec(),
                 _ => Vec::new(),
             })
+            .collect()
+    }
+
+    fn input_names(&self) -> Vec<String> {
+        self.session
+            .inputs()
+            .iter()
+            .map(|o| o.name().to_string())
+            .collect()
+    }
+
+    fn output_names(&self) -> Vec<String> {
+        self.session
+            .outputs()
+            .iter()
+            .map(|o| o.name().to_string())
             .collect()
     }
 

@@ -185,6 +185,12 @@ fn directml_session(
         .with_memory_pattern(false)
         .map_err(rt_err)?
         .with_parallel_execution(false)
+        .map_err(rt_err)?
+        // DirectML's graph fusion miscompiles HTDemucs on RDNA2 (outputs ~1e5, clipped to full
+        // scale), reproduced with onnxruntime-directml 1.24.4 in Python too. Without fusion the
+        // output matches CPU to ~1e-3 and Demucs even runs faster (1.1 s vs 1.85 s per segment
+        // on a Radeon 680M). Applied to every model to be safe.
+        .with_config_entry("ep.dml.disable_graph_fusion", "1")
         .map_err(rt_err)?;
     // DirectML plans much better with static shapes: pin the batch dimension. Unknown names
     // are ignored by onnxruntime.

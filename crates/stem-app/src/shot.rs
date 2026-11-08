@@ -2,7 +2,8 @@
 //!
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
-//! Scenes: home, drop, progress, results, models, library, settings, error, queue, export.
+//! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
+//! queue, export.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,6 +57,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Midnight Drive"),
                 when: ago(0),
                 duration_secs: 32.0,
+                bpm: Some(90.0),
+                key: Some("C major".into()),
             },
             HistoryEntry {
                 title: "Soul Sample Flip 1972".into(),
@@ -72,6 +75,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Soul Sample Flip 1972"),
                 when: ago(5),
                 duration_secs: 214.0,
+                bpm: Some(96.0),
+                key: Some("Eb major".into()),
             },
             HistoryEntry {
                 title: "voice memo 03".into(),
@@ -81,6 +86,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/voice memo 03"),
                 when: ago(30),
                 duration_secs: 61.0,
+                bpm: None,
+                key: None,
             },
             HistoryEntry {
                 title: "Interview clip - x.com".into(),
@@ -90,6 +97,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Interview clip"),
                 when: ago(80),
                 duration_secs: 95.0,
+                bpm: None,
+                key: None,
             },
         ];
         match self.scene.as_str() {
@@ -159,7 +168,7 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "export" => {
+            "results" | "results-zoom" | "export" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -178,11 +187,14 @@ impl Shot {
                             env,
                         }
                     })
-                    .collect();
+                    .collect::<Vec<StemOut>>();
+                let refs: Vec<_> = stems.iter().map(|s| (s.kind, &s.audio)).collect();
+                let analysis = crate::analysis::analyze_stems(&refs);
                 app.open_session(JobOutput {
                     title: crate::demo::DEMO_TITLE.into(),
                     out_dir: std::env::temp_dir().join("stem-splitter-demo/Midnight Drive"),
                     stems,
+                    analysis,
                 });
                 if let Some(s) = &mut app.session {
                     s.selection = Some((10.67, 13.33));
@@ -193,6 +205,17 @@ impl Shot {
                     s.tracks[0].level = 0.7;
                     s.tracks[1].level = 0.9;
                     s.tracks[2].level = 0.5;
+                }
+                if self.scene == "results-zoom"
+                    && let Some(s) = &mut app.session
+                {
+                    s.timeline.zoom_around(12.0, 3.5);
+                    s.selection = s.analysis.as_ref().and_then(|a| a.grid.as_ref()).map(|g| {
+                        (
+                            g.snap(10.4, stem_audio::analysis::GridDivision::Bar),
+                            g.snap(13.1, stem_audio::analysis::GridDivision::Beat),
+                        )
+                    });
                 }
                 app.player.seek(12.1);
                 if self.scene == "export" {

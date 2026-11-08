@@ -121,6 +121,16 @@ pub struct JobOutput {
     pub title: String,
     pub out_dir: PathBuf,
     pub stems: Vec<StemOut>,
+    /// Tempo / beat grid / key, `None` if analysis failed.
+    pub analysis: Option<crate::analysis::TrackAnalysis>,
+}
+
+/// Tempo and key detection over the finished stems (well under a second).
+fn analyze(stems: &[StemOut]) -> Option<crate::analysis::TrackAnalysis> {
+    let refs: Vec<_> = stems.iter().map(|s| (s.kind, &s.audio)).collect();
+    guard("analysis", || crate::analysis::analyze_stems(&refs))
+        .ok()
+        .flatten()
 }
 
 pub enum JobEvent {
@@ -316,10 +326,17 @@ fn write_stems(
         });
         send(JobEvent::Progress(Some((i + 1) as f32 / n as f32)));
     }
+    send(JobEvent::Stage(
+        Stage::Writing,
+        "Detecting tempo & key".into(),
+    ));
+    send(JobEvent::Progress(None));
+    let analysis = analyze(&out);
     Ok(JobOutput {
         title: title.to_owned(),
         out_dir,
         stems: out,
+        analysis,
     })
 }
 
@@ -585,10 +602,12 @@ pub fn spawn_load_history(
                     (i + 1) as f32 / kinds.len().max(1) as f32,
                 )));
             }
+            let analysis = analyze(&stems);
             Ok(JobOutput {
                 title: title.clone(),
                 out_dir: out_dir.clone(),
                 stems,
+                analysis,
             })
         });
         match result.and_then(|r| r) {

@@ -17,6 +17,7 @@
 //! | `dsp`       | windows, overlap-add, stereo / rate helpers |
 //! | `mdx`       | UVR MDX-Net separator |
 //! | `demucs`    | HTDemucs (STFT outside the graph) separator |
+//! | `roformer`  | complex-spectrogram separators: Mel-/BS-RoFormer and SCNet (STFT outside the graph) |
 
 mod catalog;
 mod demucs;
@@ -26,6 +27,7 @@ mod dsp;
 mod manager;
 mod mdx;
 mod network;
+mod roformer;
 mod runtime;
 
 use std::path::{Path, PathBuf};
@@ -111,6 +113,29 @@ pub enum ModelArch {
     /// See `tools/export_htdemucs_onnx.py`. `ModelInfo::stems` lists the sources in the
     /// network's output order.
     HtDemucs { segment_samples: usize },
+    /// Mel-Band / BS-RoFormer exported with the STFT outside the graph (audiojs/mel-roformer,
+    /// silverdaw/bs-roformer-rhythm-onnx contracts; see `roformer.rs`): periodic Hann window,
+    /// unnormalised, centred reflect STFT; segments of `segment_samples` overlap-added as
+    /// Music-Source-Separation-Training's `demix()` does. `overlap` is the default fraction of
+    /// a segment shared with the next (`1 - 1/num_overlap`), overridable by
+    /// [`LoadOptions::overlap`]. `ModelInfo::stems` lists the network's sources in output
+    /// order, plus optionally one last stem computed as `mix - sum(predicted)`.
+    RoFormer {
+        n_fft: usize,
+        hop: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
+    /// SCNet exported with the STFT outside the graph (audiojs/scnet contract, same I/O as
+    /// [`ModelArch::RoFormer`]'s `mix_spec` graphs): rectangular window, `normalized=True`
+    /// STFT, input standardised by its mono mean/std, segments padded as `SCNet.forward` pads
+    /// them.
+    Scnet {
+        n_fft: usize,
+        hop: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -134,6 +159,27 @@ impl ModelInfo {
     /// File name under `<root>/models/` (the last path segment of [`ModelInfo::url`]).
     pub fn file_name(&self) -> &'static str {
         self.url.rsplit('/').next().unwrap_or(self.id)
+    }
+
+    /// True when [`ModelInfo::url`] is not hosted yet and the file has to be exported by hand
+    /// (see `tools/`) and dropped into the models folder.
+    pub fn needs_manual_export(&self) -> bool {
+        self.url.starts_with(catalog::UNHOSTED_URL_PREFIX)
+    }
+
+    /// A short note for the UI about how this model behaves on the GPU / CPU, if worth saying.
+    pub fn device_note(&self) -> Option<&'static str> {
+        match self.arch {
+            ModelArch::RoFormer { .. } => Some(
+                "Large transformer: runs one 8 s segment at a time and needs over 1 GB \
+                 of GPU memory on DirectML. On the CPU expect several minutes per song.",
+            ),
+            ModelArch::Scnet { .. } => Some(
+                "Small int8 model: quick on DirectML and still usable on the CPU, so pick the \
+                 CPU if the GPU gives trouble.",
+            ),
+            ModelArch::HtDemucs { .. } | ModelArch::MdxNet { .. } => None,
+        }
     }
 }
 
@@ -189,7 +235,8 @@ pub struct LoadOptions {
     /// Clamped to `[0, 0.95]`.
     pub overlap: Option<f32>,
     /// Chunks per inference call. Default: 2 on DirectML, 1 on CPU (CPU gains nothing from
-    /// batching). Only used when the graph has a dynamic batch dimension.
+    /// batching). Only used when the graph has a dynamic batch dimension. RoFormer / SCNet
+    /// always run one segment at a time.
     pub batch_size: Option<usize>,
     /// ONNX Runtime intra-op threads for CPU runs (default: ORT's choice, all physical cores).
     pub cpu_threads: Option<usize>,
@@ -213,10 +260,14 @@ pub fn load_with(
             format!("model file not found: {}", model_path.display()),
         )));
     }
-    let batch_hint = options.batch_size.unwrap_or(match device {
-        Device::Cpu => 1,
-        _ => 2,
-    });
+    let batch_hint = match info.arch {
+        // Big fixed-batch-1 graphs: one segment per call, also on DirectML.
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => 1,
+        _ => options.batch_size.unwrap_or(match device {
+            Device::Cpu => 1,
+            _ => 2,
+        }),
+    };
     let session = runtime::build_session(model_path, device, options, batch_hint)?;
     match &info.arch {
         ModelArch::MdxNet { .. } => Ok(Box::new(mdx::MdxSeparator::new(
@@ -229,5 +280,8 @@ pub fn load_with(
             Box::new(session),
             options,
         )?)),
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => Ok(Box::new(
+            roformer::SpecSeparator::new(info.clone(), Box::new(session), options)?,
+        )),
     }
 }

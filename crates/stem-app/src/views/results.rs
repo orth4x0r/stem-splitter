@@ -56,6 +56,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         .color(theme::TEXT_FAINT),
                 );
             });
+            ui.add_space(6.0);
+            super::analysis_bar::chips(app, ui);
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             new_split = Button::ghost("New split")
@@ -75,26 +77,37 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     ui.add_space(14.0);
 
     let playhead = app.player.position();
+    let playing = app.player.is_playing();
+    let snap = app.settings.snap;
     let Some(s) = &mut app.session else { return };
     let dur = s.duration;
+    if playing {
+        s.timeline.follow(playhead);
+    }
 
     // ---- ruler
     let full_w = ui.available_width();
     let (ruler, _) = ui.allocate_exact_size(vec2(full_w, 22.0), Sense::hover());
     let lane_x = ruler.left() + CONTROLS_W + 18.0..=ruler.right() - 18.0;
+    // Ctrl+wheel zoom / wheel scroll over the lanes, before anything is drawn with the view.
+    let lanes_area = Rect::from_min_size(
+        pos2(ruler.left(), ruler.top()),
+        vec2(full_w, 26.0 + s.tracks.len() as f32 * (LANE_H + 26.0)),
+    );
+    s.timeline
+        .handle_input(ui, lanes_area, *lane_x.start(), *lane_x.end());
+    let view = s.timeline.clone();
     {
         let p = ui.painter();
         let (x0, x1) = (*lane_x.start(), *lane_x.end());
-        let step = if dur > 240.0 {
-            30.0
-        } else if dur > 90.0 {
-            10.0
-        } else {
-            5.0
-        };
-        let mut tsec = 0.0;
-        while tsec <= dur + 1e-6 {
-            let x = x0 + (tsec / dur.max(1e-6)) as f32 * (x1 - x0);
+        let span = view.span();
+        let step = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
+            .into_iter()
+            .find(|st| span / st <= 12.0)
+            .unwrap_or(120.0);
+        let mut tsec = (view.start / step).ceil() * step;
+        while tsec <= view.end + 1e-6 {
+            let x = x0 + view.frac_of(tsec) as f32 * (x1 - x0);
             p.vline(
                 x,
                 ruler.bottom() - 6.0..=ruler.bottom(),
@@ -103,13 +116,21 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             p.text(
                 pos2(x + 3.0, ruler.center().y - 2.0),
                 Align2::LEFT_CENTER,
-                mmss(tsec),
+                if step < 1.0 {
+                    format!(
+                        "{}.{}",
+                        mmss(tsec),
+                        ((tsec.fract() * 10.0).round() as u32) % 10
+                    )
+                } else {
+                    mmss(tsec)
+                },
                 theme::mono(10.5),
                 theme::TEXT_FAINT,
             );
             tsec += step;
         }
-        let px = x0 + (playhead / dur.max(1e-6)).clamp(0.0, 1.0) as f32 * (x1 - x0);
+        let px = x0 + view.frac_of(playhead).clamp(0.0, 1.0) as f32 * (x1 - x0);
         let tri = vec![
             pos2(px - 6.0, ruler.bottom() - 9.0),
             pos2(px + 6.0, ruler.bottom() - 9.0),
@@ -123,11 +144,16 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         p.text(
             pos2(ruler.left(), ruler.center().y),
             Align2::LEFT_CENTER,
-            "STEMS",
+            if view.is_zoomed() {
+                format!("STEMS  ·  {:.0}×", view.zoom())
+            } else {
+                "STEMS".to_owned()
+            },
             theme::semi(10.5),
             theme::TEXT_FAINT,
         );
     }
+    let grid = s.analysis.as_ref().and_then(|a| a.grid.as_ref());
     ui.add_space(4.0);
 
     // ---- stem cards
@@ -276,7 +302,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let mut lui = ui.new_child(egui::UiBuilder::new().max_rect(lane_rect));
         let action = Lane {
             id: Id::unique(("lane", i)),
-            env: &tr.env,
+            wave: crate::timeline::WaveSource {
+                env: &tr.env,
+                pyramid: view.pyramid(i),
+                audio: s.audio.get(i),
+            },
+            view: &view,
+            grid,
+            snap,
             color,
             duration: dur,
             playhead,
@@ -330,7 +363,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         });
     } else {
         ui.label(
-            egui::RichText::new("Drag across a waveform to select a sample  ·  click to seek  ·  Space to play / pause")
+            egui::RichText::new("Drag across a waveform to select a sample (Alt: no snap)  ·  click to seek  ·  Ctrl+wheel to zoom  ·  Space to play / pause")
                 .font(theme::regular(12.5))
                 .color(theme::TEXT_FAINT),
         );
@@ -416,7 +449,7 @@ fn volume_slider(ui: &mut egui::Ui, id: Id, value: &mut f32, color: Color32, wid
 /// Bottom transport bar: play / pause, time, loop, selection export.
 pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
     egui::Panel::bottom("transport")
-        .exact_size(78.0)
+        .exact_size(78.0 + 20.0)
         .resizable(false)
         .show_separator_line(false)
         .frame(
@@ -431,6 +464,8 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                 rect.top(),
                 Stroke::new(1.0, theme::STROKE),
             );
+            super::analysis_bar::overview(app, ui, super::analysis_bar::overview_rect(rect));
+            ui.add_space(20.0);
             let playing = app.player.is_playing();
             let t = ui.input(|i| i.time);
             let pos = app.player.position();

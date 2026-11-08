@@ -2,6 +2,7 @@
 //!
 //! Everything works on [`AudioBuffer`]: planar `f32` samples in `[-1, 1]`.
 
+pub mod analysis;
 mod encode;
 pub mod stft;
 

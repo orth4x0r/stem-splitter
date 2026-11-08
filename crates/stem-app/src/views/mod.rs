@@ -1,5 +1,6 @@
 //! Screens. `draw` lays out the chrome (header, sidebar) and dispatches to the current page.
 
+mod analysis_bar;
 mod chrome;
 mod export_dialog;
 mod home;
@@ -22,7 +23,7 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     chrome::sidebar(app, ui);
 
     let results = app.page == Page::Split && app.job.is_none() && app.session.is_some();
-    app.toasts.bottom_inset = if results { 80.0 } else { 0.0 };
+    app.toasts.bottom_inset = if results { 100.0 } else { 0.0 };
     if results {
         results::transport(app, ui);
     }
