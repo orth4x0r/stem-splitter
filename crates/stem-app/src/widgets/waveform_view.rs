@@ -4,9 +4,12 @@ use eframe::egui::{
     self, Color32, CornerRadius, CursorIcon, Id, Mesh, Rect, Sense, Shape, Stroke, Ui, pos2, vec2,
 };
 
+use stem_audio::analysis::BeatGrid;
+
 use super::paint;
+use crate::analysis::SnapMode;
 use crate::theme;
-use crate::waveform::Envelope;
+use crate::timeline::{Timeline, WaveSource};
 
 pub enum LaneAction {
     Seek(f64),
@@ -16,7 +19,13 @@ pub enum LaneAction {
 
 pub struct Lane<'a> {
     pub id: Id,
-    pub env: &'a Envelope,
+    pub wave: WaveSource<'a>,
+    /// Visible time window (zoom / scroll).
+    pub view: &'a Timeline,
+    /// Beat grid for grid lines and snapping.
+    pub grid: Option<&'a BeatGrid>,
+    /// Selection-edge snapping; hold Alt to bypass.
+    pub snap: SnapMode,
     pub color: Color32,
     pub duration: f64,
     pub playhead: f64,
@@ -36,16 +45,31 @@ impl Lane<'_> {
         let (rect, resp) = ui.allocate_exact_size(vec2(w, self.height), Sense::click_and_drag());
         let resp = resp.on_hover_cursor(CursorIcon::Text);
         let dur = self.duration.max(1e-6);
-        let to_t = |x: f32| (((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64) * dur;
-        let to_x = |t: f64| rect.left() + (t / dur).clamp(0.0, 1.0) as f32 * rect.width();
+        let view = self.view;
+        let to_t = |x: f32| {
+            view.time_at(((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64)
+                .clamp(0.0, dur)
+        };
+        let to_x = |t: f64| rect.left() + view.frac_of(t).clamp(0.0, 1.0) as f32 * rect.width();
+        let free = ui.input(|i| i.modifiers.alt);
+        let snap = |t: f64| {
+            if free {
+                t
+            } else {
+                crate::analysis::snap(self.grid, self.snap, t, dur)
+            }
+        };
 
         // ---- interaction
         let mut action = None;
         let anchor_id = self.id.with("anchor");
         if resp.drag_started()
-            && let Some(pos) = resp.interact_pointer_pos()
+            && let Some(pos) = ui
+                .input(|i| i.pointer.press_origin())
+                .or(resp.interact_pointer_pos())
         {
             ui.data_mut(|d| d.insert_temp(anchor_id, to_t(pos.x)));
+            ui.data_mut(|d| d.insert_temp(anchor_id.with("raw"), pos.x));
         }
         if resp.dragged()
             && let (Some(pos), Some(a)) = (
@@ -53,8 +77,11 @@ impl Lane<'_> {
                 ui.data(|d| d.get_temp::<f64>(anchor_id)),
             )
         {
-            let b = to_t(pos.x);
-            if (b - a).abs() > dur * 0.002 {
+            let moved = ui
+                .data(|d| d.get_temp::<f32>(anchor_id.with("raw")))
+                .is_some_and(|x0| (pos.x - x0).abs() > 3.0);
+            let (a, b) = (snap(a), snap(to_t(pos.x)));
+            if moved && (b - a).abs() > 1e-4 {
                 action = Some(LaneAction::Select(a.min(b), a.max(b)));
             }
         }
@@ -88,16 +115,19 @@ impl Lane<'_> {
             theme::alpha(self.color, 0.025 + 0.03 * hover),
         );
 
-        // Grid every 5 s.
-        let mut g = 5.0;
-        while g < dur {
-            let x = to_x(g);
-            p.vline(
-                x,
-                rect.y_range(),
-                Stroke::new(1.0, Color32::from_white_alpha(7)),
-            );
-            g += 5.0;
+        // Beat / bar grid, or a line every 5 s without one.
+        if let Some(grid) = self.grid {
+            crate::timeline::paint_grid(&p, rect, view, grid, self.color);
+        } else {
+            let mut g = 5.0 * (view.start / 5.0).ceil();
+            while g < view.end {
+                p.vline(
+                    to_x(g),
+                    rect.y_range(),
+                    Stroke::new(1.0, Color32::from_white_alpha(7)),
+                );
+                g += 5.0;
+            }
         }
         let mid = rect.center().y;
         p.hline(
@@ -108,14 +138,16 @@ impl Lane<'_> {
 
         let px = rect.width().max(1.0);
         let cols = (px / 2.0).floor().max(1.0) as usize; // one bar every 2 px
-        let scale = 0.92 / self.env.peak().max(0.08);
+        let scale = 0.92 / self.wave.env.peak().max(0.08);
         let half = rect.height() * 0.5 - 4.0;
         let play_x = to_x(self.playhead);
         let mut mesh = Mesh::default();
         for i in 0..cols {
             let f0 = i as f32 / cols as f32;
             let f1 = (i + 1) as f32 / cols as f32;
-            let (lo, hi, rms) = self.env.range(f0, f1);
+            let (lo, hi, rms) =
+                self.wave
+                    .range(view.time_at(f0 as f64), view.time_at(f1 as f64), dur);
             let x = rect.left() + f0 * px;
             let played = x < play_x;
             let top = mid - (hi * scale).min(1.0) * half;
@@ -143,7 +175,10 @@ impl Lane<'_> {
         p.add(Shape::mesh(mesh));
 
         // Selection.
-        if let Some((a, b)) = self.selection {
+        if let Some((a, b)) = self.selection
+            && b >= view.start
+            && a <= view.end
+        {
             let sel = Rect::from_x_y_ranges(to_x(a)..=to_x(b), rect.y_range());
             p.rect_filled(sel, CornerRadius::same(4), Color32::from_white_alpha(18));
             for x in [sel.left(), sel.right()] {
@@ -171,7 +206,7 @@ impl Lane<'_> {
         }
 
         // Playhead.
-        if self.playhead > 0.0 {
+        if self.playhead > 0.0 && self.playhead >= view.start && self.playhead <= view.end {
             let glow_a = 0.35 + 0.5 * self.level.min(1.0);
             paint::glow(
                 &p,
