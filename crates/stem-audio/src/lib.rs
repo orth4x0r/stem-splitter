@@ -3,7 +3,10 @@
 //! Everything works on [`AudioBuffer`]: planar `f32` samples in `[-1, 1]`.
 
 pub mod analysis;
+mod encode;
 pub mod stft;
+
+pub use encode::{AudioFormat, write_audio, write_flac, write_mp3};
 
 use std::path::Path;
 

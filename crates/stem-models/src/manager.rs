@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use crate::download::download_to;
+use crate::download::{DownloadStatus, download_with_status, part_path};
 use crate::{ModelInfo, ModelManager, Progress, Result, runtime};
 
 impl ModelManager {
@@ -35,18 +35,38 @@ impl ModelManager {
         progress: &mut dyn FnMut(Progress),
         cancel: &AtomicBool,
     ) -> Result<PathBuf> {
+        self.download_with_status(
+            info,
+            &mut |s| {
+                progress(Progress::Downloading {
+                    fraction: s.fraction(),
+                })
+            },
+            cancel,
+        )
+    }
+
+    /// [`ModelManager::download`] reporting bytes, total and speed. A download that was
+    /// cancelled or interrupted earlier resumes from its `.part` file (HTTP Range).
+    pub fn download_with_status(
+        &self,
+        info: &ModelInfo,
+        progress: &mut dyn FnMut(&DownloadStatus),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf> {
         let dest = self.model_path(info);
         if dest.is_file() {
             return Ok(dest);
         }
-        download_to(
-            info.url,
-            &dest,
-            info.sha256,
-            &mut |fraction| progress(Progress::Downloading { fraction }),
-            cancel,
-        )?;
+        download_with_status(info.url, &dest, info.sha256, progress, cancel)?;
         Ok(dest)
+    }
+
+    /// Bytes of an unfinished download of `info` waiting to be resumed (0 if none).
+    pub fn partial_bytes(&self, info: &ModelInfo) -> u64 {
+        part_path(&self.model_path(info))
+            .metadata()
+            .map_or(0, |m| m.len())
     }
 
     /// Make sure onnxruntime (DirectML build on Windows) is present and initialise `ort` with it.

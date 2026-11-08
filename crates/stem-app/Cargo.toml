@@ -26,3 +26,14 @@ directories = "6"
 crossbeam-channel = "0.5"
 # Screenshot mode (STEM_SHOT) saves PNGs.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+# Native drag-out of stems/samples (OLE drag with a shell data object). Same version as stem-models.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }
+raw-window-handle = "0.6"
