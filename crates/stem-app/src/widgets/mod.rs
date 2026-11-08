@@ -2,6 +2,7 @@
 
 pub mod buttons;
 pub mod icons;
+pub mod overview;
 pub mod paint;
 pub mod progress;
 pub mod toast;
