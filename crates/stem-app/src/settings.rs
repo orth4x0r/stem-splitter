@@ -68,6 +68,10 @@ pub struct Settings {
     /// Loop the selected region during playback.
     pub loop_region: bool,
     pub history: Vec<HistoryEntry>,
+    /// Turn off ambient drift, springs, entrances, confetti and the launch intro.
+    pub reduce_motion: bool,
+    /// Play the short logo intro on launch.
+    pub intro: bool,
 }
 
 impl Default for Settings {
@@ -82,6 +86,8 @@ impl Default for Settings {
             sample_fade_ms: 6.0,
             loop_region: true,
             history: Vec::new(),
+            reduce_motion: false,
+            intro: true,
         }
     }
 }

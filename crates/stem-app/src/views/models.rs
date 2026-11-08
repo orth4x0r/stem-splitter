@@ -6,7 +6,7 @@ use eframe::egui::{
 
 use crate::app::StemApp;
 use crate::backend::human_bytes;
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::{overline, page_title, paint, progress};
@@ -59,41 +59,69 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 let downloading = app.model_downloads.get(m.id).copied();
                 let ready = app.backend.is_downloaded(m.id);
                 let soon = app.backend.needs_manual_export(m);
-                let rect = rect.translate(vec2(0.0, -2.0 * h));
+                let idx = models.iter().position(|x| x.id == m.id).unwrap_or(0);
+                let enter = motion::ease_out_back(motion::appear(
+                    ui.ctx(),
+                    resp.id.with("in"),
+                    0.06 + idx as f32 * motion::STAGGER,
+                    motion::ENTER,
+                ));
+                let lift = motion::bouncy(
+                    ui.ctx(),
+                    resp.id.with("lift"),
+                    if resp.hovered() { -4.0 } else { 0.0 },
+                );
+                let rect = rect.translate(vec2(0.0, lift + 22.0 * (1.0 - enter)));
                 {
                     let p = ui.painter();
-                    paint::glow(
-                        p,
-                        rect.translate(vec2(0.0, 8.0)),
-                        CornerRadius::same(18),
-                        Color32::from_black_alpha(90),
-                        26.0,
-                    );
+                    let rr = CornerRadius::same(18);
                     if s > 0.0 {
                         paint::glow(
                             p,
-                            rect,
-                            CornerRadius::same(18),
-                            theme::alpha(theme::VIOLET, 0.35 * s),
-                            20.0,
+                            rect.translate(vec2(0.0, 10.0)),
+                            rr,
+                            Color32::from_black_alpha(120),
+                            30.0,
                         );
+                        paint::glow(p, rect, rr, theme::alpha(theme::VIOLET, 0.4 * s), 24.0);
+                        let u = (t * 0.05) as f32;
                         paint::gradient_rect(
                             p,
                             rect,
-                            CornerRadius::same(18),
-                            0.0,
-                            1.0,
+                            rr,
+                            u,
+                            u + 1.0,
                             Color32::from_white_alpha((255.0 * s) as u8),
                         );
+                        p.rect_filled(
+                            rect.shrink(1.5 * s),
+                            CornerRadius::same(17),
+                            theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
+                        );
+                        paint::glass_sheen(p, rect.shrink(1.5), CornerRadius::same(17), 0.6 + h);
+                    } else {
+                        paint::glass(p, rect, rr, None, h);
                     }
+                    // Stem-coloured wash behind the card's top band.
+                    if let Some(k) = m.stems.first() {
+                        paint::soft_disc(
+                            &p.with_clip_rect(rect.shrink(2.0).intersect(p.clip_rect())),
+                            pos2(rect.left() + 60.0, rect.top()),
+                            150.0,
+                            theme::alpha(theme::stem_color(*k), 0.08 + 0.06 * h),
+                        );
+                    }
+                    if let Some(ptr) = resp.hover_pos() {
+                        paint::spotlight(p, rect, ptr, theme::VIOLET, h);
+                    }
+                    let sweep =
+                        ui.ctx()
+                            .animate_bool_with_time(resp.id.with("sweep"), resp.hovered(), 0.7);
+                    if resp.hovered() {
+                        paint::shine(p, rect, sweep, 1.0);
+                    }
+                    paint::focus(p, &resp, rect, rr);
                     let inner = rect.shrink(1.5 * s);
-                    p.rect(
-                        inner,
-                        CornerRadius::same(17),
-                        theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
-                        Stroke::new(1.0, theme::alpha(theme::STROKE_HI, 1.0 - s)),
-                        StrokeKind::Inside,
-                    );
 
                     // Stem colour band across the top.
                     let band = Rect::from_min_size(

@@ -7,7 +7,7 @@ use eframe::egui::{
 use crate::app::StemApp;
 use crate::backend::mmss;
 use crate::pipeline::Stage;
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{Button, Kind};
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::toast::elide;
@@ -32,24 +32,38 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(vec2(w, 420.0), Sense::hover());
         let painter = ui.painter().clone();
         let p = &painter;
-        p.rect(
-            rect,
-            CornerRadius::same(24),
-            theme::CARD,
-            Stroke::new(1.0, theme::STROKE),
-            StrokeKind::Inside,
-        );
-        paint::glow(
-            p,
-            rect.shrink(40.0),
-            CornerRadius::same(24),
-            theme::alpha(theme::VIOLET, 0.06),
-            80.0,
-        );
+        let rr = CornerRadius::same(24);
+        paint::glass(p, rect, rr, Some(theme::alpha(theme::VIOLET, 0.08)), 0.0);
+
+        // Aurora in the stems' colours rises as each stem comes out of the model.
+        let cur_idx = job.stage.index();
+        let sep = if job.stage == Stage::Separating {
+            job.frac.unwrap_or(0.0)
+        } else if cur_idx > Stage::Separating.index() {
+            1.0
+        } else {
+            0.0
+        };
+        let n_st = job.stems.len().max(1) as f32;
+        let curtains: Vec<_> = job
+            .stems
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let lit = ((sep * n_st) - i as f32).clamp(0.0, 1.0);
+                (theme::stem_color(*k), 0.35 + 0.65 * lit)
+            })
+            .collect();
+        let aurora_t = if motion::reduced() { 0.0 } else { t };
+        crate::effects::aurora(p, rect.shrink(1.0), aurora_t, &curtains);
+        paint::inner_glow(p, rect, rr, theme::alpha(theme::VIOLET, 0.25));
 
         // ---- left: vinyl + ring
         let c = pos2(rect.left() + 200.0, rect.center().y);
         let spin = (t * 1.8) as f32; // ~33 rpm, near enough
+        // Platter under the record.
+        p.circle_filled(c, 132.0, Color32::from_rgb(14, 14, 22));
+        p.circle_stroke(c, 132.0, Stroke::new(1.0, Color32::from_white_alpha(16)));
         progress::vinyl(p, c, 118.0, spin, t);
         let ring_frac = if job.frac.is_none() && job.stage != Stage::Separating {
             None
@@ -57,20 +71,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             Some(overall)
         };
         progress::ring(p, c, 146.0, 5.0, ring_frac, t);
-        // Tone arm.
-        let pivot = c + vec2(130.0, -130.0);
-        let arm_end = c + vec2(58.0, -36.0);
-        p.line_segment(
-            [pivot, arm_end],
-            Stroke::new(4.0, Color32::from_rgb(70, 70, 92)),
-        );
-        p.circle_filled(pivot, 9.0, Color32::from_rgb(70, 70, 92));
-        p.circle_filled(pivot, 4.0, theme::CARD);
-        p.rect_filled(
-            Rect::from_center_size(arm_end, vec2(14.0, 10.0)),
-            CornerRadius::same(2),
-            Color32::from_rgb(110, 110, 140),
-        );
+        tone_arm(p, c, t);
 
         // ---- right: text column
         let x = rect.left() + 400.0;
@@ -111,11 +112,27 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         );
         y += 46.0;
 
-        let pct = format!("{:>2.0}%", overall * 100.0);
-        let g = p.layout_no_wrap(pct, theme::bold(58.0), Color32::WHITE);
+        // Big number: digits in white, the % sign in the accent gradient.
+        let num = format!("{:.0}", overall * 100.0);
+        let g = p.layout_no_wrap(num, theme::bold(60.0), Color32::WHITE);
         let gsz = g.size();
+        paint::soft_disc(
+            p,
+            pos2(x + gsz.x * 0.5, y),
+            gsz.x,
+            theme::alpha(theme::VIOLET, 0.18),
+        );
         p.galley(pos2(x - 2.0, y - gsz.y / 2.0), g, Color32::WHITE);
-        let sx = x + gsz.x + 16.0;
+        let pr = paint::gradient_text(
+            p,
+            pos2(x + gsz.x + 2.0, y + 6.0),
+            Align2::LEFT_CENTER,
+            "%",
+            theme::bold(34.0),
+            ((t * 0.1) as f32, (t * 0.1) as f32 + 0.6),
+            1.0,
+        );
+        let sx = pr.right() + 18.0;
         p.text(
             pos2(sx, y - 12.0),
             Align2::LEFT_CENTER,
@@ -219,6 +236,13 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         },
                     ),
                 );
+                // A spark travels along the connector into the active step.
+                if idx + 1 == cur && !motion::reduced() {
+                    let f = ((t * 0.9) % 1.0) as f32;
+                    let sp = pos2(x0 + (x1 - x0) * motion::ease_in_out(f), cc.y);
+                    paint::glow_circle(p, sp, 2.0, theme::alpha(theme::GOOD, 0.8), 8.0);
+                    p.circle_filled(sp, 2.0, Color32::WHITE);
+                }
             }
             let lc = if idx == cur {
                 theme::TEXT
@@ -313,11 +337,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         } else {
             0.45
         };
-        progress::spectrum(ui.painter(), bars, t, energy, 64);
+        let palette: Vec<Color32> = job.stems.iter().map(|k| theme::stem_color(*k)).collect();
+        progress::spectrum_in(ui.painter(), bars, t, energy, 64, &palette);
         ui.add_space(14.0);
         ui.label(
             egui::RichText::new(
-                "Tip: you can keep browsing — we'll ping you when the stems are ready.",
+                "Tip: you can keep browsing — the header keeps an eye on it and we'll ping you when the stems are ready.",
             )
             .font(theme::regular(12.5))
             .color(theme::TEXT_FAINT),
@@ -326,4 +351,49 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     if cancel {
         app.cancel_job();
     }
+}
+
+/// Brushed-metal tone arm resting on the record, with a gentle tracking wobble.
+fn tone_arm(p: &egui::Painter, c: egui::Pos2, t: f64) {
+    let wob = if motion::reduced() {
+        0.0
+    } else {
+        (t * 1.8).sin() as f32 * 1.2
+    };
+    let pivot = c + vec2(132.0, -132.0);
+    let elbow = c + vec2(104.0, -54.0);
+    let head = c + vec2(56.0 + wob, -30.0 + wob * 0.5);
+    let metal = Color32::from_rgb(150, 150, 178);
+    let shadow = Color32::from_black_alpha(120);
+    for (a, b) in [(pivot, elbow), (elbow, head)] {
+        p.line_segment([a + vec2(3.0, 5.0), b + vec2(3.0, 5.0)], Stroke::new(5.0, shadow));
+    }
+    for (a, b) in [(pivot, elbow), (elbow, head)] {
+        p.line_segment([a, b], Stroke::new(4.0, Color32::from_rgb(92, 92, 118)));
+        p.line_segment([a, b], Stroke::new(1.2, metal));
+    }
+    // Pivot: counterweight and bearing.
+    paint::glow_circle(p, pivot, 10.0, Color32::from_black_alpha(140), 10.0);
+    p.circle_filled(pivot, 13.0, Color32::from_rgb(44, 44, 60));
+    p.circle_stroke(pivot, 13.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+    p.circle_filled(pivot, 6.0, Color32::from_rgb(110, 110, 138));
+    p.circle_filled(pivot - vec2(1.5, 1.5), 2.0, Color32::from_white_alpha(160));
+    // Headshell with a tiny glowing stylus light.
+    let dir = (head - elbow).normalized();
+    let n = vec2(-dir.y, dir.x);
+    let a = head + dir * 10.0;
+    let quad = vec![
+        head - n * 6.0 - dir * 4.0,
+        head + n * 6.0 - dir * 4.0,
+        a + n * 5.0,
+        a - n * 5.0,
+    ];
+    p.add(egui::Shape::convex_polygon(
+        quad,
+        Color32::from_rgb(120, 120, 148),
+        Stroke::new(1.0, Color32::from_white_alpha(50)),
+    ));
+    let led = a - n * 2.0;
+    paint::glow_circle(p, led, 1.5, theme::alpha(theme::PINK, 0.9), 8.0);
+    p.circle_filled(led, 1.6, theme::PINK);
 }

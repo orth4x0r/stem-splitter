@@ -117,6 +117,36 @@ pub struct StemApp {
     pub shot: Option<Shot>,
     /// Drag-and-drop hover strength for the overlay, set each frame.
     pub drop_hover: bool,
+    /// Ambient background, aurora and celebration state.
+    pub fx: crate::effects::Fx,
+    pub splash: crate::splash::Splash,
+    perf: Option<Perf>,
+}
+
+/// Frame-time statistics, printed when `STEM_PERF` is set.
+#[derive(Default)]
+struct Perf {
+    sum: f32,
+    max: f32,
+    n: u32,
+}
+
+impl Perf {
+    fn add(&mut self, cpu: Option<f32>) {
+        let Some(c) = cpu else { return };
+        self.sum += c;
+        self.max = self.max.max(c);
+        self.n += 1;
+        if self.n == 120 {
+            eprintln!(
+                "perf: cpu/frame avg {:.2} ms, max {:.2} ms over {} frames",
+                1000.0 * self.sum / self.n as f32,
+                1000.0 * self.max,
+                self.n
+            );
+            *self = Self::default();
+        }
+    }
 }
 
 impl StemApp {
@@ -147,7 +177,13 @@ impl StemApp {
             next_job_id: 1,
             shot: None,
             drop_hover: false,
+            fx: crate::effects::Fx::default(),
+            splash: crate::splash::Splash::new(false),
+            perf: std::env::var_os("STEM_PERF").map(|_| Perf::default()),
         };
+        theme::motion::set_reduced(app.settings.reduce_motion);
+        let intro = app.settings.intro && shot.as_ref().is_none_or(|s| s.scene == "splash");
+        app.splash = crate::splash::Splash::new(intro);
         if let Some(problem) = app.backend.problem.clone() {
             app.toasts.error("Backend not ready", problem);
         }
@@ -480,6 +516,10 @@ impl StemApp {
                     });
                     self.toasts
                         .success(format!("{n} stems ready"), out.title.clone());
+                    self.fx.celebrate(
+                        out.stems.iter().map(|s| theme::stem_color(s.kind)).collect(),
+                        format!("{n} STEMS READY"),
+                    );
                 }
                 self.open_session(*out);
             }
@@ -517,6 +557,19 @@ impl StemApp {
         }
     }
 
+    /// Loudest audible stem right now (0..1): drives the audio-reactive chrome.
+    pub fn master_level(&self) -> f32 {
+        let Some(s) = &self.session else { return 0.0 };
+        if !self.player.is_playing() && self.shot.is_none() {
+            return 0.0;
+        }
+        (0..s.tracks.len())
+            .filter(|i| s.audible(*i))
+            .map(|i| s.tracks[i].level)
+            .fold(0.0, f32::max)
+            .min(1.0)
+    }
+
     fn sync_player(&mut self, dt: f32) {
         let Some(s) = &mut self.session else { return };
         for i in 0..s.tracks.len() {
@@ -541,13 +594,19 @@ impl StemApp {
 }
 
 impl eframe::App for StemApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        if let Some(p) = &mut self.perf {
+            p.add(frame.info().cpu_usage);
+        }
+        theme::motion::set_reduced(self.settings.reduce_motion);
         self.pump(now);
         self.handle_drops(&ctx, now);
         self.sync_player(dt);
+        let master = self.master_level();
+        self.fx.tick(dt, master);
 
         if let Some(job) = &mut self.job {
             let target = job.overall();
@@ -564,9 +623,12 @@ impl eframe::App for StemApp {
 
         views::draw(self, ui);
         self.toasts.show(&ctx);
+        let intro = self.splash.show(&ctx);
 
         // Repaint only while something moves: idle = 0% CPU.
-        let animating = self.job.is_some()
+        let animating = intro
+            || self.fx.is_animating()
+            || self.job.is_some()
             || self.player.is_playing()
             || self.drop_hover
             || !self.model_downloads.is_empty()
@@ -589,6 +651,12 @@ impl eframe::App for StemApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.shot.is_none() {
             self.settings.save(storage);
+        }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some(shot) = &self.shot {
+            shot.filter_input(raw);
         }
     }
 
