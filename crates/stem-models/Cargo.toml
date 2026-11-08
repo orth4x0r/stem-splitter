@@ -13,7 +13,13 @@ serde.workspace = true
 serde_json.workspace = true
 # load-dynamic: onnxruntime.dll is loaded at runtime (the app downloads the DirectML build),
 # so building never needs to fetch native binaries.
-ort = { version = "2.0.0-rc.15", default-features = false, features = ["load-dynamic", "directml", "ndarray", "std", "api-22"] }
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["load-dynamic", "directml", "ndarray", "std", "api-22", "preload-dylibs"] }
 ndarray = "0.17"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 sha2 = "0.11"
+# Extracting onnxruntime.dll / DirectML.dll from the NuGet packages (zip files).
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+rayon = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_Dxgi"] }
