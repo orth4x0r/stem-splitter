@@ -4,6 +4,20 @@
 //! (TRvlvr/application_data, keyed by the md5 of each file's last 10 MiB) and against each
 //! ONNX file's declared input shape `[batch, 4, dim_f, dim_t]`. sha256 and sizes are of the
 //! files at the URLs below as downloaded on 2026-11-08.
+//!
+//! Hugging Face entries: sizes and sha256 are the LFS metadata from the Hub API
+//! (`/api/models/<repo>?blobs=true`) on 2026-11-08, at these revisions (use them in place of
+//! `main` if a repo ever changes a file under us):
+//!
+//! | repo | revision |
+//! |------|----------|
+//! | audiojs/mel-roformer | c1aba02c00a0bee852d6754fe6ede8164f90a4b3 |
+//! | silverdaw/bs-roformer-rhythm-onnx | 9fa8c3acdbd488b97309e4b78c9c605389cec777 |
+//! | audiojs/scnet | e71bcdb42bce1d62b7fae25ba90fcbcf90f73f46 |
+//! | audiojs/scnet-large | 95f22d9e68f6cab78aef358f1a0de248d4edf805 |
+//!
+//! RoFormer / SCNet parameters come from the model cards and from @audio/neural-separate 0.7.0
+//! (`separate.js` presets `MEL` and `SCNET`, MIT), whose author made the audiojs exports.
 
 use crate::{ModelArch, ModelInfo, StemKind};
 
@@ -28,6 +42,16 @@ macro_rules! uvr_url {
             "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/",
             $file
         )
+    };
+}
+
+/// Our own release for models nobody hosts yet; see [`ModelInfo::needs_manual_export`].
+pub(crate) const UNHOSTED_URL_PREFIX: &str =
+    "https://github.com/orth4x0r/stem-splitter/releases/download/models-v1/";
+
+macro_rules! hf_url {
+    ($repo:literal, $file:literal) => {
+        concat!("https://huggingface.co/", $repo, "/resolve/main/", $file)
     };
 }
 
@@ -56,6 +80,34 @@ const UVR_LICENSE: &str = "MIT (UVR public model repository); weights by the UVR
 
 /// HTDemucs' training segment: `int(7.8 s * 44100)`.
 pub(crate) const HTDEMUCS_SEGMENT: usize = 343_980;
+
+/// The RoFormer exports' traced segment: 8 s at 44.1 kHz, 801 frames at hop 441.
+pub(crate) const ROFORMER_SEGMENT: usize = 352_800;
+
+/// The RoFormer exports' STFT and chunking. `overlap` 0.5 is Music-Source-Separation-Training's
+/// `num_overlap: 2` (Kim's config). The BS-RoFormer config asks for 4 (0.75), which doubles the
+/// run time for a fraction of a dB, so we default to 2 there too.
+const fn roformer(overlap: f32) -> ModelArch {
+    ModelArch::RoFormer {
+        n_fft: 2048,
+        hop: 441,
+        segment_samples: ROFORMER_SEGMENT,
+        overlap,
+    }
+}
+
+/// SCNet: n_fft 4096, hop 1024, 11 s segments every 2.75 s (the reference's step 0.25).
+const SCNET: ModelArch = ModelArch::Scnet {
+    n_fft: 4096,
+    hop: 1024,
+    segment_samples: 485_100,
+    overlap: 0.75,
+};
+
+/// The HTDemucs weights' terms; the code is MIT.
+const DEMUCS_LICENSE: &str = "MIT code (facebookresearch/demucs). Weights: published with the MIT \
+                              code, but the author has since said they are for research only \
+                              (demucs issues #327, #508) - check before commercial use";
 
 const ENTRIES: &[Entry] = &[
     Entry {
@@ -128,9 +180,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "htdemucs",
         name: "HTDemucs (4 stems)",
-        description: "Meta's Hybrid Transformer Demucs v4: drums, bass, other, vocals. Not hosted \
-                      yet - export it with tools/export_htdemucs_onnx.py and put htdemucs.onnx \
-                      in the models folder.",
+        description: "Meta's Hybrid Transformer Demucs v4: drums, bass, other, vocals. A solid \
+                      all-round 4-stem split. Prebuilt ONNX export by Ghilda (the same I/O as \
+                      tools/export_htdemucs_onnx.py).",
         stems: &[
             StemKind::Drums,
             StemKind::Bass,
@@ -141,11 +193,12 @@ const ENTRIES: &[Entry] = &[
         arch: ModelArch::HtDemucs {
             segment_samples: HTDEMUCS_SEGMENT,
         },
-        url: our_url!("htdemucs.onnx"),
-        sha256: Some("86a2d8f3e68d0eaf7af0d7da306c0b5c9326b09cdc2c236c559a4ce0c70e513b"),
-        // tools/export_htdemucs_onnx.py output (torch 2.15, demucs 4.1.0, opset 17).
-        size_bytes: 174_264_723,
-        license: "MIT (facebookresearch/demucs code and weights)",
+        // Inputs mix [1, 2, 343980] + mag [1, 4, 2048, 336], outputs freq [1, 4, 4, 2048, 336]
+        // + time [1, 4, 2, 343980]: our contract (demucs.rs matches I/O by rank, not name).
+        url: hf_url!("Ghilda/htdemucs-onnx", "htdemucs.onnx"),
+        sha256: Some("e528a932a7d091e15938369135569884b62c2193fb11044c3d4a0d4c7b9221af"),
+        size_bytes: 174_266_088,
+        license: DEMUCS_LICENSE,
     },
     Entry {
         id: "htdemucs-6s",
@@ -168,8 +221,95 @@ const ENTRIES: &[Entry] = &[
         },
         url: our_url!("htdemucs_6s.onnx"),
         sha256: Some("f0a08e1774fd85c3bf23d6c1bda4db7f99de70e2512ac35f84b7c954ec1bb4d0"),
+        // tools/export_htdemucs_onnx.py output (torch 2.15, demucs 4.1.0, opset 17).
         size_bytes: 114_560_305,
-        license: "MIT (facebookresearch/demucs code and weights)",
+        license: DEMUCS_LICENSE,
+    },
+    Entry {
+        id: "mel-roformer-kim",
+        name: "Mel-RoFormer Vocals (Kim)",
+        description: "Best vocals: Kimberley Jensen's Mel-Band RoFormer, the cleanest acapellas \
+                      and instrumentals here (median vocal SDR 12.1 dB on MUSDB18 previews vs \
+                      about 9-10 for MDX-Net). The network predicts the vocals; the \
+                      instrumental is mix minus vocals. Big (464 MB) and slow on the CPU.",
+        stems: &[StemKind::Vocals, StemKind::Instrumental],
+        sample_rate: 44_100,
+        arch: roformer(0.5),
+        // mix_spec [1, 4, 1025, 801] -> stems_spec [1, 4, 1025, 801]; fp16 weights, fp32 compute.
+        url: hf_url!("audiojs/mel-roformer", "mel-roformer.fp16.onnx"),
+        sha256: Some("adcbbb826f12453fbb86652b503242d565a9c81cdef1bca2fe0e54752eba91ef"),
+        size_bytes: 464_050_097,
+        license: "MIT (weights: Kimberley Jensen; model code: ZFTurbo/Music-Source-Separation-\
+                  Training and lucidrains/BS-RoFormer; ONNX export: audiojs)",
+    },
+    Entry {
+        id: "bs-roformer-4stem",
+        name: "BS-RoFormer (4 stems)",
+        description: "Best drums and bass: ZFTurbo's 4-stem Band-Split RoFormer (drums, bass, \
+                      other, vocals; SDR 9.66 averaged over the stems on MUSDB18). Tighter \
+                      drums and bass than HTDemucs for beat-making; vocals are better from \
+                      Mel-RoFormer. Big (269 MB) and slow on the CPU.",
+        stems: &[
+            StemKind::Drums,
+            StemKind::Bass,
+            StemKind::Other,
+            StemKind::Vocals,
+        ],
+        sample_rate: 44_100,
+        arch: roformer(0.5),
+        // spec_real / spec_imag [1, 2, 1025, 801] -> out_spec_real / out_spec_imag
+        // [1, 4, 2, 1025, 801]; fp16 weights, opset 17.
+        url: hf_url!(
+            "silverdaw/bs-roformer-rhythm-onnx",
+            "bs_roformer_4stem_rhythm_fp16.onnx"
+        ),
+        sha256: Some("4bac38e42c085b5d69964e2b7ff161318a1315122c10b025c718b20e94d85d6b"),
+        size_bytes: 269_457_840,
+        license: "MIT (weights: ZFTurbo MSST v1.0.12 model_bs_roformer_ep_17_sdr_9.6568, \
+                  trained on MUSDB18-HQ; ONNX export: silverdaw)",
+    },
+    Entry {
+        id: "scnet",
+        name: "SCNet (4 stems, fast)",
+        description: "Fast 4-stem: a 13 MB int8 SCNet (drums, bass, other, vocals) at about \
+                      HTDemucs quality (vocals 9.9, drums 9.4, bass 8.4, other 6.1 dB median \
+                      SDR on MUSDB18 previews) in a fraction of the memory. Good for quick \
+                      previews and weak GPUs.",
+        stems: &[
+            StemKind::Drums,
+            StemKind::Bass,
+            StemKind::Other,
+            StemKind::Vocals,
+        ],
+        sample_rate: 44_100,
+        arch: SCNET,
+        // mix_spec [1, 4, 2049, 476] -> stems_spec [1, 16, 2049, 476].
+        url: hf_url!("audiojs/scnet", "scnet.int8.onnx"),
+        sha256: Some("98228931494151762a1c4ab1ec7899a894b1f81fd4a509921a9d2f9bacc50845"),
+        size_bytes: 12_900_277,
+        license: "MIT (starrytong/SCNet code and weights; the author confirmed converted \
+                  redistribution in SCNet issue #35; trained on MUSDB18-HQ; ONNX: audiojs)",
+    },
+    Entry {
+        id: "scnet-large",
+        name: "SCNet Large (4 stems)",
+        description: "Best 4-stem quality per MB: SCNet-large int8 (45 MB), ahead of HTDemucs on \
+                      every stem in its author's MUSDB18 test (vocals 10.9, drums 11.2, bass \
+                      9.4, other 7.3 dB). About 3x slower than SCNet, still far lighter than \
+                      the RoFormers.",
+        stems: &[
+            StemKind::Drums,
+            StemKind::Bass,
+            StemKind::Other,
+            StemKind::Vocals,
+        ],
+        sample_rate: 44_100,
+        arch: SCNET,
+        url: hf_url!("audiojs/scnet-large", "scnet-large.int8.onnx"),
+        sha256: Some("b2dc586a1e0e6c0afe4915e9057ea29111397b7bbf589edc3d85de91de79cd72"),
+        size_bytes: 45_082_486,
+        license: "MIT (starrytong/SCNet code and weights, via ZFTurbo MSST v1.0.9; trained on \
+                  MUSDB18-HQ; ONNX: audiojs)",
     },
 ];
 
@@ -239,6 +379,17 @@ mod tests {
                     assert!(m.stems.len() == 4 || m.stems.len() == 6);
                     assert_eq!(segment_samples, HTDEMUCS_SEGMENT);
                 }
+                ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => {
+                    // The segment geometry must resolve (frames consistent with the segment).
+                    let p = crate::roformer::SpecParams::new(&m.arch, None, None).unwrap();
+                    assert!(p.step < p.segment && p.fade > 0, "{}", m.id);
+                    assert!(!m.stems.is_empty());
+                }
+            }
+            if m.url.starts_with("https://huggingface.co/") {
+                assert!(m.url.contains("/resolve/main/"), "{}", m.id);
+                assert!(m.sha256.is_some(), "{}: pin hosted files", m.id);
+                assert!(!m.needs_manual_export());
             }
         }
         assert_eq!(
@@ -246,5 +397,16 @@ mod tests {
             StemKind::Vocals
         );
         assert!(find_model("nope").is_none());
+        assert!(!find_model("htdemucs").unwrap().needs_manual_export());
+        assert!(find_model("htdemucs-6s").unwrap().needs_manual_export());
+        let frames = |id: &str| {
+            crate::roformer::SpecParams::new(&find_model(id).unwrap().arch, None, None)
+                .unwrap()
+                .frames
+        };
+        assert_eq!(frames("mel-roformer-kim"), 801);
+        assert_eq!(frames("bs-roformer-4stem"), 801);
+        assert_eq!(frames("scnet"), 476);
+        assert_eq!(frames("scnet-large"), 476);
     }
 }
