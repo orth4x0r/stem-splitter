@@ -3,7 +3,9 @@
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
 //! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
-//! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat).
+//! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat),
+//! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
+//! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,6 +44,9 @@ impl Shot {
     }
 
     pub fn setup(&mut self, app: &mut StemApp, _ctx: &egui::Context) {
+        if std::env::var_os("STEM_REDUCE_MOTION").is_some() {
+            app.settings.reduce_motion = true;
+        }
         let ago = |h: u64| now_unix().saturating_sub(h * 3600);
         app.settings.history = vec![
             HistoryEntry {
@@ -168,7 +173,7 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "results-zoom" | "export" | "chop" | "chop-grid" => {
+            "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -251,6 +256,16 @@ impl Shot {
                         app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
                     }
                 }
+                if self.scene == "celebrate" {
+                    app.fx.celebrate(
+                        kinds.iter().map(|k| crate::theme::stem_color(*k)).collect(),
+                        "4 STEMS READY",
+                    );
+                }
+            }
+            "empty" => {
+                app.page = Page::Library;
+                app.settings.history.clear();
             }
             "models" => {
                 app.page = Page::Models;
@@ -282,6 +297,27 @@ impl Shot {
             _ => {
                 app.url_input = String::new();
             }
+        }
+    }
+
+    /// Screenshots ignore the real (virtual-display) pointer, so nothing looks hovered by
+    /// accident. `STEM_SHOT_POINTER=x,y` parks a pointer there instead, for hover shots.
+    pub fn filter_input(&self, raw: &mut egui::RawInput) {
+        raw.events.retain(|e| {
+            !matches!(
+                e,
+                egui::Event::PointerMoved(_)
+                    | egui::Event::PointerButton { .. }
+                    | egui::Event::PointerGone
+            )
+        });
+        if let Some((x, y)) = std::env::var("STEM_SHOT_POINTER").ok().and_then(|s| {
+            let (x, y) = s.split_once(',')?;
+            Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+        }) {
+            raw.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+        } else {
+            raw.events.push(egui::Event::PointerGone);
         }
     }
 

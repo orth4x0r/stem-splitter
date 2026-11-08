@@ -1,13 +1,11 @@
 //! Library: past splits, re-open or reveal in Explorer.
 
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, pos2, vec2,
-};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, pos2, vec2};
 
 use crate::app::StemApp;
 use crate::backend::mmss;
 use crate::settings::relative_time;
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::Button;
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::toast::elide;
@@ -26,38 +24,104 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             r,
             Icon::Library,
             "Nothing here yet",
-            "Split a track and it shows up here.",
+            "Split a track and it shows up here, ready to re-open and keep chopping.",
         );
+        ui.vertical_centered(|ui| {
+            if Button::primary("Split something")
+                .icon(Icon::Sparkle)
+                .height(40.0)
+                .show(ui)
+                .clicked()
+            {
+                app.page = crate::app::Page::Split;
+            }
+        });
         return;
     }
     let now = ui.input(|i| i.time);
     let entries = app.settings.history.clone();
+
+    // Stats row: count-up numbers.
+    let total_secs: f64 = entries.iter().map(|e| e.duration_secs).sum();
+    let total_stems: usize = entries.iter().map(|e| e.stems.len()).sum();
+    let gap = 12.0;
+    let tw = ((ui.available_width() - 2.0 * gap) / 3.0).min(240.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        crate::widgets::stat_tile(
+            ui,
+            vec2(tw, 72.0),
+            entries.len() as f32,
+            |v| format!("{v:.0}"),
+            "Sessions",
+            theme::PINK,
+        );
+        crate::widgets::stat_tile(
+            ui,
+            vec2(tw, 72.0),
+            total_stems as f32,
+            |v| format!("{v:.0}"),
+            "Stems on disk",
+            theme::VIOLET,
+        );
+        crate::widgets::stat_tile(
+            ui,
+            vec2(tw, 72.0),
+            total_secs as f32,
+            |v| mmss(v as f64),
+            "Audio split",
+            theme::CYAN,
+        );
+    });
+    ui.add_space(18.0);
+
     let mut reopen = None;
     let mut reveal = None;
     let mut remove = None;
+    let ctx = ui.ctx().clone();
     for (i, e) in entries.iter().enumerate() {
         let w = ui.available_width();
         let (rect, resp) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
-        let h = ui
-            .ctx()
-            .animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+        let h = ctx.animate_bool_with_time(resp.id, resp.hovered(), motion::BASE);
+        let enter = motion::ease_out(motion::appear(
+            &ctx,
+            resp.id.with("in"),
+            0.1 + i.min(10) as f32 * motion::STAGGER,
+            motion::ENTER,
+        ));
+        let rect = rect.translate(vec2(24.0 * (1.0 - enter), 0.0));
         {
             let p = ui.painter();
-            p.rect(
-                rect,
-                CornerRadius::same(16),
-                theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
-                Stroke::new(1.0, theme::lerp_color(theme::STROKE, theme::STROKE_HI, h)),
-                StrokeKind::Inside,
-            );
-            // Generated "cover art": gradient tile with a hash-picked offset and mini bars.
-            let art = Rect::from_min_size(rect.min + vec2(12.0, 12.0), vec2(60.0, 60.0));
             let seed = e
                 .title
                 .bytes()
                 .fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
             let u = (seed % 100) as f32 / 100.0;
+            let tint = theme::accent_at(u + 0.3);
+            paint::glass(p, rect, CornerRadius::same(16), None, h);
+            if let Some(ptr) = resp.hover_pos() {
+                paint::spotlight(p, rect, ptr, tint, h);
+            }
+            // Hover: accent bar slides in on the left edge.
+            if h > 0.0 {
+                let bar = Rect::from_min_size(
+                    pos2(rect.left(), rect.top() + 18.0),
+                    vec2(3.0, (rect.height() - 36.0) * h),
+                );
+                paint::glow(p, bar, CornerRadius::same(2), theme::alpha(tint, 0.7), 8.0);
+                p.rect_filled(bar, CornerRadius::same(2), tint);
+            }
+            // Generated "cover art": gradient tile with a hash-picked offset and mini bars.
+            let art = Rect::from_min_size(rect.min + vec2(12.0, 12.0), vec2(60.0, 60.0));
+            paint::glow(
+                p,
+                art,
+                CornerRadius::same(12),
+                theme::alpha(theme::accent_at(u), 0.2 + 0.3 * h),
+                12.0,
+            );
             paint::gradient_rect(p, art, CornerRadius::same(12), u, u + 0.6, Color32::WHITE);
+            paint::glass_sheen(p, art, CornerRadius::same(12), 0.8);
             for (j, k) in e.stems.iter().enumerate().take(6) {
                 let bh = 10.0 + ((seed >> (j * 3)) % 24) as f32;
                 let x = art.left() + 10.0 + j as f32 * 7.5;

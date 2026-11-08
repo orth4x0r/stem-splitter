@@ -117,6 +117,13 @@ impl Overview<'_> {
                 resp.hovered() || resp.dragged(),
                 0.12,
             );
+            super::paint::glow(
+                &p,
+                w,
+                CornerRadius::same(3),
+                theme::alpha(theme::CYAN, 0.18 + 0.2 * hover),
+                8.0,
+            );
             p.rect_filled(w, CornerRadius::same(3), Color32::from_white_alpha(10));
             p.rect_stroke(
                 w,
@@ -130,7 +137,15 @@ impl Overview<'_> {
         }
 
         let px = to_x(self.playhead);
+        super::paint::glow(
+            &p,
+            Rect::from_x_y_ranges(px - 0.75..=px + 0.75, rect.y_range()),
+            CornerRadius::ZERO,
+            theme::alpha(theme::PINK, 0.6),
+            6.0,
+        );
         p.vline(px, rect.y_range(), Stroke::new(1.5, Color32::WHITE));
+        super::paint::glass_sheen(&p, rect, CornerRadius::same(5), 0.0);
         p.rect_stroke(
             rect,
             CornerRadius::same(5),

@@ -127,6 +127,10 @@ pub struct Settings {
     /// Exported samples: trim selections that are nearly N bars to exactly N bars.
     pub export_loop_bars: bool,
     pub history: Vec<HistoryEntry>,
+    /// Turn off ambient drift, springs, entrances, confetti and the launch intro.
+    pub reduce_motion: bool,
+    /// Play the short logo intro on launch.
+    pub intro: bool,
 }
 
 impl Default for Settings {
@@ -146,6 +150,8 @@ impl Default for Settings {
             snap: crate::analysis::SnapMode::default(),
             export_loop_bars: true,
             history: Vec::new(),
+            reduce_motion: false,
+            intro: true,
         }
     }
 }

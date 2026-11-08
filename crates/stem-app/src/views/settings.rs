@@ -11,7 +11,7 @@ use crate::widgets::toast::elide;
 use crate::widgets::{page_title, progress};
 
 fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut egui::Ui)) {
-    theme::card_frame().show(ui, |ui| {
+    let shown = theme::glass_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
             egui::RichText::new(title)
@@ -28,6 +28,7 @@ fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut
         ui.add_space(8.0);
         add(ui);
     });
+    crate::widgets::paint::glass_sheen(ui.painter(), shown.response.rect, theme::R_CARD, 0.0);
     ui.add_space(14.0);
 }
 
@@ -223,6 +224,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         },
     );
 
+    appearance(app, ui);
+
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     let _ = Rect::NOTHING;
     ui.painter().text(
@@ -234,6 +237,45 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         ),
         theme::regular(12.0),
         theme::TEXT_FAINT,
+    );
+}
+
+/// Look & motion: accessibility switches for the animated parts of the UI.
+fn appearance(app: &mut StemApp, ui: &mut egui::Ui) {
+    section(
+        ui,
+        "Look & motion",
+        "Ambient light, springs, confetti and the launch intro. Progress indicators always move.",
+        |ui| {
+            row(ui, "Reduce motion", |ui| {
+                buttons::toggle_labeled(ui, &mut app.settings.reduce_motion, "Reduce motion");
+                ui.label(
+                    egui::RichText::new("Calmer UI: no drifting background, springs or bursts")
+                        .font(theme::regular(12.0))
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            row(ui, "Launch intro", |ui| {
+                let enabled = !app.settings.reduce_motion;
+                ui.add_enabled_ui(enabled, |ui| {
+                    buttons::toggle_labeled(ui, &mut app.settings.intro, "Launch intro");
+                });
+                ui.label(
+                    egui::RichText::new("One-second logo build-up when the app starts")
+                        .font(theme::regular(12.0))
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            row(ui, "Keyboard", |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Tab moves focus · Ctrl+1–4 switch pages · Space plays / pauses",
+                    )
+                    .font(theme::regular(12.5))
+                    .color(theme::TEXT_DIM),
+                );
+            });
+        },
     );
 }
 
