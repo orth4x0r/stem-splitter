@@ -142,9 +142,9 @@ const ENTRIES: &[Entry] = &[
             segment_samples: HTDEMUCS_SEGMENT,
         },
         url: our_url!("htdemucs.onnx"),
-        sha256: None,
-        // Approximate (fp32 export of the 42M-parameter model).
-        size_bytes: 170_000_000,
+        sha256: Some("86a2d8f3e68d0eaf7af0d7da306c0b5c9326b09cdc2c236c559a4ce0c70e513b"),
+        // tools/export_htdemucs_onnx.py output (torch 2.15, demucs 4.1.0, opset 17).
+        size_bytes: 174_264_723,
         license: "MIT (facebookresearch/demucs code and weights)",
     },
     Entry {
@@ -167,9 +167,8 @@ const ENTRIES: &[Entry] = &[
             segment_samples: HTDEMUCS_SEGMENT,
         },
         url: our_url!("htdemucs_6s.onnx"),
-        sha256: None,
-        // Approximate.
-        size_bytes: 110_000_000,
+        sha256: Some("f0a08e1774fd85c3bf23d6c1bda4db7f99de70e2512ac35f84b7c954ec1bb4d0"),
+        size_bytes: 114_560_305,
         license: "MIT (facebookresearch/demucs code and weights)",
     },
 ];
