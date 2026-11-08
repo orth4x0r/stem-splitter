@@ -251,13 +251,16 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             } else {
                 theme::TEXT_FAINT
             };
-            p.text(
-                pos2(cx - 12.0, y + 34.0),
-                Align2::LEFT_CENTER,
-                s.label(),
-                theme::semi(12.0),
-                lc,
-            );
+            // When the steps are cramped (small windows) only the current one is named.
+            if step_w >= 104.0 || idx == cur {
+                p.text(
+                    pos2(cx - 12.0, y + 34.0),
+                    Align2::LEFT_CENTER,
+                    s.label(),
+                    theme::semi(12.0),
+                    lc,
+                );
+            }
         }
 
         // Cancel button, bottom-right of the card.
@@ -366,7 +369,10 @@ fn tone_arm(p: &egui::Painter, c: egui::Pos2, t: f64) {
     let metal = Color32::from_rgb(150, 150, 178);
     let shadow = Color32::from_black_alpha(120);
     for (a, b) in [(pivot, elbow), (elbow, head)] {
-        p.line_segment([a + vec2(3.0, 5.0), b + vec2(3.0, 5.0)], Stroke::new(5.0, shadow));
+        p.line_segment(
+            [a + vec2(3.0, 5.0), b + vec2(3.0, 5.0)],
+            Stroke::new(5.0, shadow),
+        );
     }
     for (a, b) in [(pivot, elbow), (elbow, head)] {
         p.line_segment([a, b], Stroke::new(4.0, Color32::from_rgb(92, 92, 118)));

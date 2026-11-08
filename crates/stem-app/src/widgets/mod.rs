@@ -30,13 +30,7 @@ pub fn page_title(ui: &mut Ui, title: &str, subtitle: &str) {
     ));
     let line = Rect::from_min_size(r.min, vec2(r.width() * grow, r.height()));
     if line.width() > 1.0 {
-        paint::glow(
-            ui.painter(),
-            line,
-            2,
-            theme::alpha(theme::PINK, 0.5),
-            8.0,
-        );
+        paint::glow(ui.painter(), line, 2, theme::alpha(theme::PINK, 0.5), 8.0);
         paint::gradient_rect(ui.painter(), line, 2, 0.0, 1.0, Color32::WHITE);
     }
     if !subtitle.is_empty() {
@@ -77,11 +71,6 @@ pub fn overline(ui: &mut Ui, text: &str) {
 pub fn empty_state(ui: &Ui, rect: Rect, icon: icons::Icon, title: &str, body: &str) {
     let p = ui.painter();
     let c = rect.center() - vec2(0.0, 34.0);
-    let t = if motion::reduced() {
-        0.0
-    } else {
-        ui.input(|i| i.time) as f32
-    };
     let a = motion::ease_out_back(motion::appear(
         ui.ctx(),
         Id::unique(("empty", title)),
@@ -101,14 +90,12 @@ pub fn empty_state(ui: &Ui, rect: Rect, icon: icons::Icon, title: &str, body: &s
         theme::stem_color(stem_models::StemKind::Bass),
         theme::stem_color(stem_models::StemKind::Other),
     ];
+    // The satellites swing into place during the entrance, then rest (idle = no repaints).
     for (i, col) in dots.iter().enumerate() {
-        let ang = t * 0.5 + i as f32 * std::f32::consts::TAU / 4.0;
+        let ang = -0.8 + 2.4 * a + i as f32 * std::f32::consts::TAU / 4.0;
         let dp = c + vec2(ang.cos(), ang.sin()) * 58.0 * a;
         paint::glow_circle(p, dp, 3.0, theme::alpha(*col, 0.5), 10.0);
         p.circle_filled(dp, 4.0, *col);
-    }
-    if !motion::reduced() {
-        ui.ctx().request_repaint();
     }
     let rr = 32.0 * a;
     if rr > 1.0 {
@@ -147,7 +134,14 @@ pub fn empty_state(ui: &Ui, rect: Rect, icon: icons::Icon, title: &str, body: &s
 }
 
 /// A glass stat tile with a big count-up number (e.g. "4 sessions").
-pub fn stat_tile(ui: &mut Ui, size: egui::Vec2, value: f32, fmt: impl Fn(f32) -> String, label: &str, color: Color32) {
+pub fn stat_tile(
+    ui: &mut Ui,
+    size: egui::Vec2,
+    value: f32,
+    fmt: impl Fn(f32) -> String,
+    label: &str,
+    color: Color32,
+) {
     let (r, resp) = ui.allocate_exact_size(size, Sense::hover());
     let v = motion::count_up(ui.ctx(), resp.id.with("n"), value);
     let p = ui.painter();

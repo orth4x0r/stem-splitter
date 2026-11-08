@@ -554,7 +554,10 @@ impl StemApp {
                     self.toasts
                         .success(format!("{n} stems ready"), out.title.clone());
                     self.fx.celebrate(
-                        out.stems.iter().map(|s| theme::stem_color(s.kind)).collect(),
+                        out.stems
+                            .iter()
+                            .map(|s| theme::stem_color(s.kind))
+                            .collect(),
                         format!("{n} STEMS READY"),
                     );
                 } else if let Some(h) = self

@@ -249,13 +249,19 @@ pub fn cached_texture(
 
 /// Gaussian-ish radial falloff (white, alpha 1 in the centre, 0 at the edge).
 fn disc_texture(ctx: &egui::Context) -> TextureId {
-    cached_texture(ctx, "soft-disc", [96, 96], TextureOptions::LINEAR, |x, y| {
-        let dx = (x as f32 + 0.5) / 48.0 - 1.0;
-        let dy = (y as f32 + 0.5) / 48.0 - 1.0;
-        let d2 = dx * dx + dy * dy;
-        let a = ((-d2 * 3.2).exp() - (-3.2f32).exp()).max(0.0) / (1.0 - (-3.2f32).exp());
-        Color32::from_white_alpha((a * 255.0).round() as u8)
-    })
+    cached_texture(
+        ctx,
+        "soft-disc",
+        [96, 96],
+        TextureOptions::LINEAR,
+        |x, y| {
+            let dx = (x as f32 + 0.5) / 48.0 - 1.0;
+            let dy = (y as f32 + 0.5) / 48.0 - 1.0;
+            let d2 = dx * dx + dy * dy;
+            let a = ((-d2 * 3.2).exp() - (-3.2f32).exp()).max(0.0) / (1.0 - (-3.2f32).exp());
+            Color32::from_white_alpha((a * 255.0).round() as u8)
+        },
+    )
 }
 
 /// A soft, round light of radius `r` (one textured quad: far cheaper than a big blur).
@@ -290,10 +296,8 @@ pub fn glass_sheen(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius
     let tex = sheen_texture(painter.ctx());
     let a = (10.0 + 10.0 * strength).min(255.0) as u8;
     painter.add(
-        RectShape::filled(rect.shrink(1.0), radius, Color32::from_white_alpha(a)).with_texture(
-            tex,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-        ),
+        RectShape::filled(rect.shrink(1.0), radius, Color32::from_white_alpha(a))
+            .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
     );
     // Top-edge highlight that fades out towards the corners.
     let r = radius.nw.max(radius.ne) as f32;
@@ -381,7 +385,13 @@ pub fn spotlight(painter: &Painter, rect: Rect, pointer: Pos2, color: Color32, s
     }
     let p = painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
     let r = rect.height().max(80.0) * 0.55;
-    glow_circle(&p, pointer, r * 0.35, theme::alpha(color, 0.10 * strength), r);
+    glow_circle(
+        &p,
+        pointer,
+        r * 0.35,
+        theme::alpha(color, 0.10 * strength),
+        r,
+    );
 }
 
 /// A diagonal light band that sweeps across `rect` as `t` goes 0 → 1 (hover shine).
@@ -433,7 +443,12 @@ pub fn focus_ring(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius>
 }
 
 /// Draw the focus ring when `resp` has keyboard focus.
-pub fn focus(painter: &Painter, resp: &egui::Response, rect: Rect, radius: impl Into<CornerRadius>) {
+pub fn focus(
+    painter: &Painter,
+    resp: &egui::Response,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+) {
     if resp.has_focus() && painter.ctx().input(|i| !i.pointer.any_down()) {
         focus_ring(painter, rect, radius);
     }
@@ -465,10 +480,15 @@ pub fn ripple(painter: &Painter, resp: &egui::Response, rect: Rect, color: Color
         return;
     }
     let t = theme::motion::ease_out(age / DUR);
-    let far = [rect.left_top(), rect.right_top(), rect.left_bottom(), rect.right_bottom()]
-        .iter()
-        .map(|c| (*c - s.pos).length())
-        .fold(0.0, f32::max);
+    let far = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.left_bottom(),
+        rect.right_bottom(),
+    ]
+    .iter()
+    .map(|c| (*c - s.pos).length())
+    .fold(0.0, f32::max);
     let p = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     p.circle_filled(s.pos, far * t, theme::alpha(color, 0.28 * (1.0 - t)));
     ctx.request_repaint();

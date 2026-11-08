@@ -1,8 +1,6 @@
 //! Library: past splits, re-open or reveal in Explorer.
 
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, pos2, vec2,
-};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, pos2, vec2};
 
 use crate::app::StemApp;
 use crate::backend::mmss;

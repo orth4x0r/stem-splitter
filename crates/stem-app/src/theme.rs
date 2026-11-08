@@ -24,6 +24,7 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(150, 150, 178);
 /// Faint text still meets WCAG AA (4.5:1) on `BG` and ~4.4:1 on `CARD`.
 pub const TEXT_FAINT: Color32 = Color32::from_rgb(124, 124, 156);
 /// Purely decorative text (never the only carrier of information).
+#[allow(dead_code)]
 pub const TEXT_GHOST: Color32 = Color32::from_rgb(84, 84, 110);
 
 /// Accent gradient stops: hot pink -> violet -> cyan.
@@ -73,6 +74,7 @@ pub const R_CARD: u8 = 16;
 pub const R_CTRL: u8 = 10;
 
 /// Spacing rhythm: everything snaps to a 4 px grid.
+#[allow(dead_code)] // Design tokens: not every step is used yet.
 pub mod space {
     pub const XS: f32 = 4.0;
     pub const S: f32 = 8.0;
@@ -83,6 +85,7 @@ pub mod space {
 }
 
 /// Type scale (points). Display/H1/H2 use ExtraBold, H3 SemiBold, the rest Regular.
+#[allow(dead_code)]
 pub mod size {
     pub const DISPLAY: f32 = 44.0;
     pub const H1: f32 = 30.0;
@@ -271,6 +274,7 @@ pub fn glass_frame() -> egui::Frame {
 }
 
 /// A standard card frame.
+#[allow(dead_code)] // Opaque variant kept for views that sit on busy backgrounds.
 pub fn card_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(CARD)

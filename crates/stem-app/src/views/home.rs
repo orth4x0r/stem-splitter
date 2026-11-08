@@ -175,23 +175,19 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         pos2(rect.right() - btn_w - 10.0, rect.top() + 10.0),
         vec2(btn_w, 42.0),
     );
-    // The button breathes softly once there's something to split.
-    if has_text {
-        let pulse = if motion::reduced() {
-            0.5
-        } else {
-            paint::pulse(now, 1.6)
-        };
+    // The button lights up once there's something to split (eases in, then holds still:
+    // nothing animates while idle).
+    let armed = ui
+        .ctx()
+        .animate_bool_with_time(id.with("armed"), has_text, motion::SLOW);
+    if armed > 0.0 {
         paint::glow(
             ui.painter(),
             btn_rect,
             CornerRadius::same(13),
-            theme::alpha(theme::PINK, 0.18 + 0.2 * pulse),
-            16.0 + 8.0 * pulse,
+            theme::alpha(theme::PINK, 0.32 * armed),
+            14.0 + 12.0 * armed,
         );
-        if !motion::reduced() {
-            ui.ctx().request_repaint();
-        }
     }
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect));
     let go = Button::primary("Split it")
@@ -235,11 +231,7 @@ fn platforms(ui: &mut egui::Ui) {
             p.rect(
                 r,
                 CornerRadius::same(12),
-                theme::lerp_color(
-                    Color32::from_white_alpha(5),
-                    theme::alpha(*color, 0.12),
-                    h,
-                ),
+                theme::lerp_color(Color32::from_white_alpha(5), theme::alpha(*color, 0.12), h),
                 Stroke::new(
                     1.0,
                     theme::lerp_color(Color32::from_white_alpha(14), theme::alpha(*color, 0.5), h),
@@ -293,14 +285,10 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64, height: f32) {
     if let Some(ptr) = resp.hover_pos() {
         paint::spotlight(p, rect, ptr, theme::VIOLET, hover);
     }
-    // Equaliser watermark across the zone; it comes alive on hover.
+    // Equaliser watermark across the zone; bars near the pointer swell (follows the mouse, so
+    // it costs nothing while the pointer rests).
     let mid = rect.center().y + 18.0;
-    let live = if hover > 0.0 && !motion::reduced() {
-        ui.ctx().request_repaint();
-        now as f32
-    } else {
-        0.0
-    };
+    let ptr_x = resp.hover_pos().map(|p| p.x);
     let n = 96;
     for i in 0..n {
         let f = i as f32 / n as f32;
@@ -308,7 +296,11 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64, height: f32) {
         let base = ((f * 37.0).sin() * 0.5 + 0.5)
             * ((f * 7.0 + 1.0).sin() * 0.5 + 0.6)
             * (1.0 - (f - 0.5).abs() * 1.5).max(0.1);
-        let wob = 0.75 + 0.25 * (live * 5.0 + f * 23.0).sin() * hover;
+        let near = ptr_x.map_or(0.0, |px| {
+            let d = (x - px) / 90.0;
+            (-d * d).exp()
+        });
+        let wob = 0.75 + 0.7 * near * hover;
         let h = 46.0 * base * wob;
         let c = theme::alpha(theme::accent_at(f), 0.06 + 0.14 * active);
         p.rect_filled(
@@ -422,7 +414,11 @@ fn section_header(ui: &mut egui::Ui, title: &str, link: &str, icon: Icon) -> boo
     ui.horizontal(|ui| {
         overline(ui, title);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            clicked = Button::ghost(link).icon(icon).height(28.0).show(ui).clicked();
+            clicked = Button::ghost(link)
+                .icon(icon)
+                .height(28.0)
+                .show(ui)
+                .clicked();
         });
     });
     clicked
@@ -504,21 +500,30 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
             if resp.hovered() {
                 paint::shine(p, r, sweep, 1.0);
             }
-            p.text(
-                pos2(r.left() + 16.0, r.top() + 22.0),
-                Align2::LEFT_CENTER,
-                m.name,
-                theme::semi(14.0),
-                theme::TEXT,
-            );
-            let stems = format!("{} stems", m.stems.len());
-            p.text(
-                pos2(r.right() - 14.0, r.top() + 22.0),
-                Align2::RIGHT_CENTER,
-                stems,
+            let name = p.layout_no_wrap(m.name.to_owned(), theme::semi(14.0), theme::TEXT);
+            let stems = p.layout_no_wrap(
+                format!("{} stems", m.stems.len()),
                 theme::mono(11.0),
                 theme::TEXT_FAINT,
             );
+            // Narrow cards (small windows) drop the stem count rather than collide.
+            if name.size().x + stems.size().x + 44.0 <= r.width() {
+                p.galley(
+                    pos2(
+                        r.right() - 14.0 - stems.size().x,
+                        r.top() + 22.0 - stems.size().y / 2.0,
+                    ),
+                    stems,
+                    theme::TEXT_FAINT,
+                );
+            }
+            let name_h = name.size().y;
+            p.with_clip_rect(r.shrink(8.0).intersect(p.clip_rect()))
+                .galley(
+                    pos2(r.left() + 16.0, r.top() + 22.0 - name_h / 2.0),
+                    name,
+                    theme::TEXT,
+                );
             // Stem colour dots + names; collapse to dots only when they don't fit.
             let labels: f32 = m
                 .stems
@@ -550,19 +555,35 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
             } else {
                 for k in &m.stems {
                     let c = theme::stem_color(*k);
-                    paint::glow_circle(p, pos2(x + 4.0, r.top() + 50.0), 2.0, theme::alpha(c, 0.5), 6.0);
+                    paint::glow_circle(
+                        p,
+                        pos2(x + 4.0, r.top() + 50.0),
+                        2.0,
+                        theme::alpha(c, 0.5),
+                        6.0,
+                    );
                     p.circle_filled(pos2(x + 4.0, r.top() + 50.0), 4.0, c);
                     x += 13.0;
                 }
-                p.text(
-                    pos2(x + 4.0, r.top() + 50.0),
-                    Align2::LEFT_CENTER,
-                    m.stems
-                        .iter()
-                        .map(|k| k.label())
-                        .collect::<Vec<_>>()
-                        .join(" · "),
+                // Names in whatever room is left, cut with an ellipsis.
+                let names = m
+                    .stems
+                    .iter()
+                    .map(|k| k.label())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    names,
                     theme::regular(11.0),
+                    theme::TEXT_FAINT,
+                );
+                job.wrap.max_width = (r.right() - 12.0 - (x + 4.0)).max(10.0);
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                let g = p.fonts_mut(|f| f.layout_job(job));
+                p.galley(
+                    pos2(x + 4.0, r.top() + 50.0 - g.size().y / 2.0),
+                    g,
                     theme::TEXT_FAINT,
                 );
             }
@@ -605,12 +626,7 @@ fn failure_card(
     now: f64,
 ) {
     // Entrance: drop in, then a short horizontal shake ("no").
-    let a = motion::appear(
-        ui.ctx(),
-        Id::unique(("failure", title)),
-        0.0,
-        0.7,
-    );
+    let a = motion::appear(ui.ctx(), Id::unique(("failure", title)), 0.0, 0.7);
     let shake = if a < 1.0 {
         (a * std::f32::consts::PI * 7.0).sin() * 8.0 * (1.0 - a).powi(2)
     } else {
@@ -696,11 +712,18 @@ fn failure_card(
     paint::glass_sheen(ui.painter(), r, CornerRadius::same(16), 0.2);
     // Red accent bar on the left edge.
     let bar = Rect::from_min_size(
-        pos2(r.left(), r.top() + 18.0),
-        vec2(3.0, r.height() - 36.0),
+        pos2(r.left() + 1.5, r.top() + 18.0),
+        vec2(2.5, r.height() - 36.0),
     );
-    paint::glow(ui.painter(), bar, CornerRadius::same(2), theme::alpha(theme::BAD, 0.7), 8.0);
-    ui.painter().rect_filled(bar, CornerRadius::same(2), theme::BAD);
+    paint::glow(
+        ui.painter(),
+        bar,
+        CornerRadius::same(2),
+        theme::alpha(theme::BAD, 0.7),
+        8.0,
+    );
+    ui.painter()
+        .rect_filled(bar, CornerRadius::same(2), theme::BAD);
 }
 
 fn recent(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {

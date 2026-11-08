@@ -2,7 +2,9 @@
 //!
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
-//! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error.
+//! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
+//! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
+//! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -221,8 +223,7 @@ impl Shot {
             let (x, y) = s.split_once(',')?;
             Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
         }) {
-            raw.events
-                .push(egui::Event::PointerMoved(egui::pos2(x, y)));
+            raw.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
         } else {
             raw.events.push(egui::Event::PointerGone);
         }

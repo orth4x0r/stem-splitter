@@ -28,12 +28,7 @@ fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut
         ui.add_space(8.0);
         add(ui);
     });
-    crate::widgets::paint::glass_sheen(
-        ui.painter(),
-        shown.response.rect,
-        theme::R_CARD,
-        0.0,
-    );
+    crate::widgets::paint::glass_sheen(ui.painter(), shown.response.rect, theme::R_CARD, 0.0);
     ui.add_space(14.0);
 }
 

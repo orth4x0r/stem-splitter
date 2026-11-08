@@ -101,7 +101,10 @@ fn ambient_mood(app: &StemApp) -> (Vec<Color32>, f32) {
         let c = s.tracks.iter().map(|t| theme::stem_color(t.kind)).collect();
         return (c, 0.25);
     }
-    (vec![theme::VIOLET, theme::PINK, theme::CYAN, theme::VIOLET], 0.0)
+    (
+        vec![theme::VIOLET, theme::PINK, theme::CYAN, theme::VIOLET],
+        0.0,
+    )
 }
 
 /// Soft fades at the top and bottom of the scrolling page, so content dissolves into the

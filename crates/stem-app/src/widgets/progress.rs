@@ -98,14 +98,7 @@ pub fn spectrum(p: &Painter, rect: Rect, t: f64, energy: f32, bars: usize) {
 
 /// [`spectrum`] coloured by `palette` (e.g. the job's stem colours), spread left to right;
 /// an empty palette uses the accent gradient. Peak caps float above the bars.
-pub fn spectrum_in(
-    p: &Painter,
-    rect: Rect,
-    t: f64,
-    energy: f32,
-    bars: usize,
-    palette: &[Color32],
-) {
+pub fn spectrum_in(p: &Painter, rect: Rect, t: f64, energy: f32, bars: usize, palette: &[Color32]) {
     let bw = rect.width() / bars as f32;
     for i in 0..bars {
         let x = i as f32 / bars as f32;
@@ -129,11 +122,13 @@ pub fn spectrum_in(
         p.rect_filled(bar, CornerRadius::same(2), c);
         if !palette.is_empty() && rect.height() > 30.0 {
             // Floating peak cap.
-            let cap = Rect::from_min_size(
-                pos2(bar.left(), bar.top() - 5.0),
-                vec2(bar.width(), 2.0),
+            let cap =
+                Rect::from_min_size(pos2(bar.left(), bar.top() - 5.0), vec2(bar.width(), 2.0));
+            p.rect_filled(
+                cap,
+                CornerRadius::ZERO,
+                theme::lerp_color(c, Color32::WHITE, 0.6),
             );
-            p.rect_filled(cap, CornerRadius::ZERO, theme::lerp_color(c, Color32::WHITE, 0.6));
         }
         // Reflection.
         let refl = Rect::from_min_size(

@@ -75,7 +75,11 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
             let x = tile.right() + 14.0;
             let g = p.layout_no_wrap("STEM ".into(), theme::bold(17.0), theme::TEXT);
             let w = g.size().x;
-            p.galley(pos2(x, rect.center().y - 9.0 - g.size().y / 2.0), g, theme::TEXT);
+            p.galley(
+                pos2(x, rect.center().y - 9.0 - g.size().y / 2.0),
+                g,
+                theme::TEXT,
+            );
             paint::gradient_text(
                 p,
                 pos2(x + w, rect.center().y - 9.0),
@@ -456,6 +460,9 @@ fn engine_card(app: &StemApp, ui: &egui::Ui, full: Rect) {
     };
     let card = Rect::from_min_max(pos2(full.left(), bottom - h), pos2(full.right(), bottom));
     let p = ui.painter();
+    if has_session {
+        meter::level_glow(p, card, CornerRadius::same(12), theme::PINK, app.fx.master);
+    }
     paint::glass(p, card, CornerRadius::same(12), None, 0.0);
     let (dot, label, status) = if app.job.is_some() {
         (theme::CYAN, "ENGINE", "Working")
@@ -555,7 +562,10 @@ fn engine_card(app: &StemApp, ui: &egui::Ui, full: Rect) {
 pub fn transport_edge(app: &StemApp, ui: &egui::Ui, screen: Rect, height: f32) {
     let level = app.fx.master;
     let y = screen.bottom() - height;
-    let line = Rect::from_min_max(pos2(screen.left() + 212.0, y), pos2(screen.right(), y + 1.5));
+    let line = Rect::from_min_max(
+        pos2(screen.left() + 212.0, y),
+        pos2(screen.right(), y + 1.5),
+    );
     let p = ui.painter();
     let t = ui.input(|i| i.time);
     let u = if motion::reduced() {
@@ -660,7 +670,10 @@ pub fn drop_overlay(ctx: &egui::Context) {
                         r,
                         Stroke::new(
                             1.5,
-                            theme::alpha(theme::accent_at(k as f32 * 0.4), 0.5 * f * (1.0 - f) * 4.0 * 0.5),
+                            theme::alpha(
+                                theme::accent_at(k as f32 * 0.4),
+                                0.5 * f * (1.0 - f) * 4.0 * 0.5,
+                            ),
                         ),
                     );
                 }

@@ -86,13 +86,7 @@ pub fn paint_frame(p: &Painter, screen: Rect, t: f32) {
     let c = screen.center() - vec2(0.0, 30.0);
     // Room glow.
     let warm = (t / 0.6).min(1.0) * (1.0 - out);
-    paint::glow_circle(
-        p,
-        c,
-        120.0,
-        theme::alpha(theme::VIOLET, 0.22 * warm),
-        320.0,
-    );
+    paint::glow_circle(p, c, 120.0, theme::alpha(theme::VIOLET, 0.22 * warm), 320.0);
     paint::glow_circle(
         p,
         c + vec2(160.0, 60.0),

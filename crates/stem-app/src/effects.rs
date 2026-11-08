@@ -54,29 +54,31 @@ impl Fx {
     pub fn is_animating(&self) -> bool {
         self.burst.is_some() || self.pending.is_some()
     }
-
-    pub fn clock(&self) -> f64 {
-        self.clock
-    }
 }
 
 // ---- ambient background --------------------------------------------------------------------
 
 /// Grain + faint scanlines, baked once into a small tiling texture.
 fn grain_texture(ctx: &egui::Context) -> egui::TextureId {
-    paint::cached_texture(ctx, "grain", [128, 128], TextureOptions::NEAREST_REPEAT, |x, y| {
-        // Integer hash -> white noise.
-        let mut h = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
-        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
-        h ^= h >> 16;
-        let n = (h & 0xff) as f32 / 255.0;
-        if y % 3 == 0 {
-            // Scanline: a whisper of black.
-            Color32::from_black_alpha(9)
-        } else {
-            Color32::from_white_alpha((n * n * 7.0) as u8)
-        }
-    })
+    paint::cached_texture(
+        ctx,
+        "grain",
+        [128, 128],
+        TextureOptions::NEAREST_REPEAT,
+        |x, y| {
+            // Integer hash -> white noise.
+            let mut h = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
+            h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+            h ^= h >> 16;
+            let n = (h & 0xff) as f32 / 255.0;
+            if y % 3 == 0 {
+                // Scanline: a whisper of black.
+                Color32::from_black_alpha(9)
+            } else {
+                Color32::from_white_alpha((n * n * 7.0) as u8)
+            }
+        },
+    )
 }
 
 /// Paint the window background: base fill, drifting colour blobs, grain, vignette.
@@ -279,19 +281,25 @@ pub fn show_burst(ctx: &egui::Context, fx: &mut Fx, area: Rect) {
         fx.burst = None;
         return;
     }
-    let dt = ((now - b.last) as f32).clamp(0.0, 1.0 / 20.0);
+    // Simulate the real elapsed time in fixed 1/60 s steps, so slow frames don't slow the
+    // physics down (capped, so a stalled window doesn't spin through the whole burst).
+    let elapsed = ((now - b.last) as f32).clamp(0.0, 0.25);
+    let steps = (elapsed * 60.0).round().max(1.0) as usize;
+    let dt = elapsed / steps as f32;
     b.last = now;
-    for q in &mut b.parts {
-        if q.spark {
-            q.v *= (-4.0 * dt).exp();
-        } else {
-            q.v.y += 1150.0 * dt;
-            q.v *= (-1.6 * dt).exp();
-            // Flutter: confetti drifts sideways as it falls.
-            q.v.x += (q.rot * 1.7).sin() * 60.0 * dt;
+    for _ in 0..steps {
+        for q in &mut b.parts {
+            if q.spark {
+                q.v *= (-4.0 * dt).exp();
+            } else {
+                q.v.y += 1150.0 * dt;
+                q.v *= (-1.6 * dt).exp();
+                // Flutter: confetti drifts sideways as it falls.
+                q.v.x += (q.rot * 1.7).sin() * 60.0 * dt;
+            }
+            q.p += q.v * dt;
+            q.rot += q.spin * dt;
         }
-        q.p += q.v * dt;
-        q.rot += q.spin * dt;
     }
     ctx.request_repaint();
 
@@ -303,7 +311,13 @@ pub fn show_burst(ctx: &egui::Context, fx: &mut Fx, area: Rect) {
     // Flash.
     let flash = (1.0 - age / 0.45).max(0.0);
     if flash > 0.0 {
-        paint::glow_circle(&p, o, 60.0, theme::alpha(Color32::WHITE, 0.35 * flash), 160.0);
+        paint::glow_circle(
+            &p,
+            o,
+            60.0,
+            theme::alpha(Color32::WHITE, 0.35 * flash),
+            160.0,
+        );
         paint::glow_circle(&p, o, 140.0, theme::alpha(accent, 0.3 * flash), 220.0);
     }
     // Shockwave rings.

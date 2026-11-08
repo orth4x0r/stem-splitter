@@ -149,11 +149,7 @@ impl<'a> Button<'a> {
                 paint::gradient_rect(p, rect, r, shift, 1.0 + shift, Color32::WHITE);
                 paint::glass_sheen(p, rect, r, 0.8 + hover);
                 // A light band sweeps across once on hover.
-                let sweep = ctx.animate_bool_with_time(
-                    resp.id.with("sweep"),
-                    resp.hovered(),
-                    0.55,
-                );
+                let sweep = ctx.animate_bool_with_time(resp.id.with("sweep"), resp.hovered(), 0.55);
                 if resp.hovered() {
                     paint::shine(p, rect, sweep, 2.2);
                 }

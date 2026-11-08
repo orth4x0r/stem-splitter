@@ -105,10 +105,22 @@ pub fn bar(p: &Painter, id: Id, rect: Rect, input: f32, color: Color32) {
 
 /// Level-driven neon glow around a card: call before painting the card body. Cheap: one
 /// blurred rect, skipped when silent.
-pub fn level_glow(p: &Painter, rect: Rect, radius: impl Into<CornerRadius>, color: Color32, level: f32) {
+pub fn level_glow(
+    p: &Painter,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    color: Color32,
+    level: f32,
+) {
     if level <= 0.01 {
         return;
     }
     let l = level.clamp(0.0, 1.0);
-    paint::glow(p, rect, radius, theme::alpha(color, 0.12 + 0.35 * l), 10.0 + 22.0 * l);
+    paint::glow(
+        p,
+        rect,
+        radius,
+        theme::alpha(color, 0.12 + 0.35 * l),
+        10.0 + 22.0 * l,
+    );
 }
