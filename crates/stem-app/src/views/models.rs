@@ -42,13 +42,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let gap = 16.0;
     let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
     let cw = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
-    let ch = 196.0;
+    let ch = 214.0;
     for row in models.chunks(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for m in row {
                 let (rect, resp) = ui.allocate_exact_size(vec2(cw, ch), Sense::click());
-                let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+                let resp = resp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(format!("License: {}", m.license));
                 let sel = selected == Some(m.id);
                 let h = ui
                     .ctx()
@@ -56,6 +58,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 let s = ui.ctx().animate_bool_with_time(resp.id.with("s"), sel, 0.2);
                 let downloading = app.model_downloads.get(m.id).copied();
                 let ready = app.backend.is_downloaded(m.id);
+                let soon = app.backend.needs_manual_export(m);
                 let rect = rect.translate(vec2(0.0, -2.0 * h));
                 {
                     let p = ui.painter();
@@ -147,29 +150,20 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             Color32::WHITE,
                         );
                     }
-                    let meta = format!(
-                        "{}  ·  {}  ·  {} Hz",
-                        human_bytes(m.size_bytes),
-                        m.license,
-                        m.sample_rate
-                    );
-                    p.text(
-                        pos2(inner.right() - 20.0, inner.top() + 46.0),
-                        Align2::RIGHT_CENTER,
-                        meta,
-                        theme::mono(11.5),
-                        theme::TEXT_FAINT,
-                    );
-                    p.text(
-                        pos2(inner.left() + 20.0, inner.top() + 72.0),
-                        Align2::LEFT_CENTER,
-                        crate::widgets::toast::elide(m.description, 70),
+                    // Description: up to two wrapped lines, cut with an ellipsis.
+                    let mut job = egui::text::LayoutJob::simple(
+                        m.description.to_owned(),
                         theme::regular(13.0),
                         theme::TEXT_DIM,
+                        inner.width() - 40.0,
                     );
+                    job.wrap.max_rows = 2;
+                    let g = p.fonts_mut(|f| f.layout_job(job));
+                    p.galley(inner.min + vec2(20.0, 64.0), g, theme::TEXT_DIM);
                 }
                 // Stem chips.
-                let chips = Rect::from_min_size(rect.min + vec2(20.0, 92.0), vec2(cw - 40.0, 28.0));
+                let chips =
+                    Rect::from_min_size(rect.min + vec2(20.0, 112.0), vec2(cw - 40.0, 28.0));
                 let mut cu = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(chips)
@@ -217,16 +211,33 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 } else {
                     let (dot, status) = if ready {
                         (theme::GOOD, "Installed")
+                    } else if soon {
+                        (theme::WARN, "Coming soon · needs a manual ONNX export")
                     } else {
                         (theme::TEXT_FAINT, "Not downloaded")
                     };
-                    p.circle_filled(pos2(foot.left() + 4.0, foot.center().y), 4.0, dot);
+                    p.circle_filled(pos2(foot.left() + 4.0, foot.center().y - 8.0), 4.0, dot);
                     p.text(
-                        pos2(foot.left() + 16.0, foot.center().y),
+                        pos2(foot.left() + 16.0, foot.center().y - 8.0),
                         Align2::LEFT_CENTER,
                         status,
                         theme::semi(12.5),
                         if ready { theme::TEXT } else { theme::TEXT_DIM },
+                    );
+                    // Size and a short license tag; the full license is in the tooltip.
+                    let short_license = m.license.split([' ', '(']).next().unwrap_or(m.license);
+                    let meta = format!(
+                        "{}  ·  {}  ·  {:.1} kHz",
+                        human_bytes(m.size_bytes),
+                        short_license,
+                        m.sample_rate as f32 / 1000.0
+                    );
+                    p.text(
+                        pos2(foot.left(), foot.center().y + 12.0),
+                        Align2::LEFT_CENTER,
+                        meta,
+                        theme::mono(11.5),
+                        theme::TEXT_FAINT,
                     );
                     let br = Rect::from_min_max(
                         pos2(foot.right() - 150.0, foot.top() + 2.0),
@@ -237,7 +248,9 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             .max_rect(br)
                             .layout(egui::Layout::right_to_left(egui::Align::Center)),
                     );
-                    if !ready {
+                    if soon {
+                        // Nothing to click: see the model's description / tools/export script.
+                    } else if !ready {
                         if Button::new("Download")
                             .icon(Icon::Download)
                             .height(32.0)
@@ -256,8 +269,16 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         app.settings.model_id = Some(m.id.to_owned());
                     }
                 }
-                if resp.clicked() {
+                if resp.clicked() && !soon {
                     app.settings.model_id = Some(m.id.to_owned());
+                }
+                if soon {
+                    // Dim the whole card.
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(18),
+                        Color32::from_black_alpha(90),
+                    );
                 }
             }
         });

@@ -46,12 +46,9 @@ impl Envelope {
         env
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.max.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.max.is_empty()
     }
 
     /// Largest absolute value, to scale lanes so quiet stems are still visible.

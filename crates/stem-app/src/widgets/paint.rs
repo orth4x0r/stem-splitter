@@ -120,6 +120,7 @@ pub fn arc(painter: &Painter, center: Pos2, radius: f32, a0: f32, a1: f32, strok
 }
 
 /// Arc whose colour runs along the accent gradient, shifted by `phase`.
+#[allow(clippy::too_many_arguments)]
 pub fn gradient_arc(
     painter: &Painter,
     center: Pos2,

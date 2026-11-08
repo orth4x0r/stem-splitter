@@ -18,14 +18,11 @@ pub enum Icon {
     Folder,
     Download,
     Link,
-    File,
     Scissors,
     Check,
     Close,
     Chip,
     Loop,
-    Speaker,
-    SpeakerOff,
     Headphones,
     Export,
     Refresh,
@@ -125,17 +122,6 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             arc(p, b, r, -FRAC_PI_2 * 1.5, -FRAC_PI_2 * 1.5 + PI * 1.25, st);
             line(&[(6.0, 10.0), (10.0, 6.0)]);
         }
-        Icon::File => {
-            line(&[
-                (3.5, 1.5),
-                (3.5, 14.5),
-                (12.5, 14.5),
-                (12.5, 5.0),
-                (9.0, 1.5),
-                (3.5, 1.5),
-            ]);
-            line(&[(9.0, 1.5), (9.0, 5.0), (12.5, 5.0)]);
-        }
         Icon::Scissors => {
             p.circle(at(4.0, 12.0), 2.2 * u, Color32::TRANSPARENT, st);
             p.circle(at(12.0, 12.0), 2.2 * u, Color32::TRANSPARENT, st);
@@ -175,27 +161,6 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(10.0, 2.5), (12.5, 5.0), (10.0, 7.5)]);
             line(&[(13.5, 6.5), (13.5, 11.0), (3.5, 11.0)]);
             line(&[(6.0, 8.5), (3.5, 11.0), (6.0, 13.5)]);
-        }
-        Icon::Speaker | Icon::SpeakerOff => {
-            p.add(Shape::convex_polygon(
-                vec![
-                    at(2.0, 6.0),
-                    at(5.0, 6.0),
-                    at(9.0, 2.5),
-                    at(9.0, 13.5),
-                    at(5.0, 10.0),
-                    at(2.0, 10.0),
-                ],
-                color,
-                Stroke::new(w * 0.5, color),
-            ));
-            if icon == Icon::Speaker {
-                arc(p, at(9.0, 8.0), 3.0 * u, -0.9, 0.9, st);
-                arc(p, at(9.0, 8.0), 5.5 * u, -0.9, 0.9, st);
-            } else {
-                line(&[(11.0, 5.5), (15.0, 10.5)]);
-                line(&[(15.0, 5.5), (11.0, 10.5)]);
-            }
         }
         Icon::Headphones => {
             arc(p, at(8.0, 9.0), 6.0 * u, PI, TAU, st);

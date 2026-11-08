@@ -52,6 +52,10 @@ impl Backend {
                 .unwrap_or_else(|_| vec![(Device::Cpu, "CPU".to_owned())]);
             (models, devices)
         };
+        let mut devices = devices;
+        if !devices.iter().any(|(d, _)| *d == Device::Auto) {
+            devices.insert(0, (Device::Auto, "Auto (best available)".to_owned()));
+        }
         let mut me = Self {
             demo,
             paths,
@@ -91,9 +95,21 @@ impl Backend {
         self.downloaded.get(id).copied().unwrap_or(false)
     }
 
+    /// The chosen model, or the first usable one.
     pub fn model(&self, id: Option<&str>) -> Option<&ModelInfo> {
         id.and_then(|id| self.models.iter().find(|m| m.id == id))
-            .or_else(|| self.models.first())
+            .filter(|m| self.is_available(m))
+            .or_else(|| self.models.iter().find(|m| self.is_available(m)))
+    }
+
+    /// HTDemucs weights aren't hosted (they need a manual ONNX export); until the file is in
+    /// the models folder they're shown as "coming soon".
+    pub fn needs_manual_export(&self, m: &ModelInfo) -> bool {
+        !self.demo && matches!(m.arch, ModelArch::HtDemucs { .. }) && !self.is_downloaded(m.id)
+    }
+
+    pub fn is_available(&self, m: &ModelInfo) -> bool {
+        !self.needs_manual_export(m)
     }
 
     pub fn device_name(&self, device: Device) -> String {

@@ -269,8 +269,9 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
             theme::TEXT_DIM,
         );
     }
-    if resp.clicked() && app.shot.is_none() {
-        if let Some(path) = rfd::FileDialog::new()
+    if resp.clicked()
+        && app.shot.is_none()
+        && let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Audio",
                 &[
@@ -278,9 +279,8 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
                 ],
             )
             .pick_file()
-        {
-            app.start_job(InputSource::File(path), now);
-        }
+    {
+        app.start_job(InputSource::File(path), now);
     }
 }
 
@@ -299,7 +299,14 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
         });
     });
     ui.add_space(4.0);
-    let models: Vec<_> = app.backend.models.iter().take(4).cloned().collect();
+    let models: Vec<_> = app
+        .backend
+        .models
+        .iter()
+        .filter(|m| app.backend.is_available(m))
+        .take(4)
+        .cloned()
+        .collect();
     if models.is_empty() {
         ui.label(egui::RichText::new("No models registered yet.").color(theme::TEXT_DIM));
         return;

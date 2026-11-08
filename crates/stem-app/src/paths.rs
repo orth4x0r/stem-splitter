@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
-    /// Models and the ONNX Runtime library.
+    /// `ModelManager` root: it keeps `models/` and `runtime/` (onnxruntime) under it.
     pub models: PathBuf,
     /// yt-dlp (and ffmpeg if the user drops one in).
     pub tools: PathBuf,
@@ -20,7 +20,7 @@ impl AppPaths {
             .map(|d| d.data_local_dir().to_path_buf())
             .unwrap_or_else(|| std::env::temp_dir().join("stem-splitter"));
         Self {
-            models: data.join("models"),
+            models: data.clone(),
             tools: data.join("tools"),
             downloads: data.join("downloads"),
             data,

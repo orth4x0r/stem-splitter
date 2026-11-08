@@ -212,14 +212,6 @@ impl Player {
         self.frames = 0;
     }
 
-    pub fn is_loaded(&self) -> bool {
-        self.shared.is_some()
-    }
-
-    pub fn has_output(&self) -> bool {
-        self.sink.is_some()
-    }
-
     pub fn is_playing(&self) -> bool {
         self.shared
             .as_ref()
@@ -238,10 +230,6 @@ impl Player {
     pub fn toggle(&mut self) {
         let p = self.is_playing();
         self.set_playing(!p);
-    }
-
-    pub fn duration(&self) -> f64 {
-        self.frames as f64 / self.rate as f64
     }
 
     /// Playhead in seconds.

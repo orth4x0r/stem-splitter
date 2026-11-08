@@ -269,9 +269,14 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
     check(cancel)?;
 
     // 4. Separate
+    let on = match sep.active_device() {
+        Device::Cpu if req.device != Device::Cpu => "CPU (GPU unavailable)",
+        Device::Cpu => "CPU",
+        _ => "GPU · DirectML",
+    };
     send(JobEvent::Stage(
         Stage::Separating,
-        req.model.name.to_string(),
+        format!("{} on {on}", req.model.name),
     ));
     send(JobEvent::Progress(Some(0.0)));
     let stems = sep
@@ -537,6 +542,60 @@ mod tests {
             }
         }
         assert!((last - 1.0).abs() < 1e-5);
+    }
+
+    /// End-to-end on the real backends: writes a short test tone, downloads ONNX Runtime and
+    /// the smallest MDX model, separates, writes WAVs. Needs network; run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn real_pipeline_end_to_end() {
+        let tmp = std::env::temp_dir().join("stem-app-e2e");
+        let _ = std::fs::remove_dir_all(tmp.join("out"));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let input = tmp.join("tone.wav");
+        let sr = 44_100;
+        let tone: Vec<f32> = (0..sr * 4)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / sr as f32).sin() * 0.3)
+            .collect();
+        stem_audio::write_wav(
+            &input,
+            &AudioBuffer::new(sr as u32, vec![tone.clone(), tone]),
+            WavFormat::Pcm16,
+        )
+        .unwrap();
+        let data = std::env::var_os("STEM_E2E_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| tmp.join("data"));
+        let paths = AppPaths {
+            models: data.clone(),
+            tools: data.join("tools"),
+            downloads: data.join("downloads"),
+            data,
+        };
+        let model = stem_models::find_model("mdx-inst-hq3").expect("model in registry");
+        let req = JobRequest {
+            id: 1,
+            source: InputSource::File(input),
+            model,
+            device: Device::Cpu,
+            output_root: tmp.join("out"),
+            wav: WavFormat::Pcm24,
+            cookies_from_browser: None,
+            paths,
+            demo: false,
+        };
+        let cancel = AtomicBool::new(false);
+        let out = run_real(&req, &cancel, &|ev| {
+            if let JobEvent::Stage(s, d) = ev {
+                eprintln!("{s:?}: {d}");
+            }
+        })
+        .expect("pipeline");
+        assert_eq!(out.stems.len(), 2);
+        for s in &out.stems {
+            assert!(s.path.is_file(), "{}", s.path.display());
+            assert_eq!(s.audio.frames(), sr * 4);
+        }
     }
 
     #[test]

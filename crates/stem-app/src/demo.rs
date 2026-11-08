@@ -223,7 +223,8 @@ pub fn stem(kind: StemKind) -> AudioBuffer {
     let mut l = vec![0.0f32; n];
     let mut r = vec![0.0f32; n];
     match kind {
-        StemKind::Vocals | StemKind::Dialogue => vocals(&mut l, &mut r),
+        StemKind::Vocals | StemKind::Dialogue | StemKind::LeadVocals => vocals(&mut l, &mut r),
+        StemKind::BackingVocals => plucks(&mut l, &mut r, 0.05, 0.0),
         StemKind::Drums | StemKind::Effects => drums(&mut l, &mut r),
         StemKind::Bass => bass(&mut l, &mut r),
         StemKind::Other | StemKind::Music => keys(&mut l, &mut r),

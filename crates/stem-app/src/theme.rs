@@ -27,7 +27,6 @@ pub const TEXT_FAINT: Color32 = Color32::from_rgb(96, 96, 124);
 pub const PINK: Color32 = Color32::from_rgb(255, 46, 136);
 pub const VIOLET: Color32 = Color32::from_rgb(139, 92, 246);
 pub const CYAN: Color32 = Color32::from_rgb(34, 211, 238);
-pub const ACCENT: Color32 = VIOLET;
 pub const ACCENT_GRADIENT: [Color32; 3] = [PINK, VIOLET, CYAN];
 
 pub const GOOD: Color32 = Color32::from_rgb(52, 211, 153);
@@ -46,6 +45,8 @@ pub fn stem_color(kind: StemKind) -> Color32 {
         StemKind::Dialogue => Color32::from_rgb(251, 146, 60),
         StemKind::Music => Color32::from_rgb(96, 165, 250),
         StemKind::Effects => Color32::from_rgb(244, 114, 182),
+        StemKind::LeadVocals => Color32::from_rgb(255, 92, 120),
+        StemKind::BackingVocals => Color32::from_rgb(232, 121, 249),
     }
 }
 
@@ -53,7 +54,6 @@ pub fn stem_color(kind: StemKind) -> Color32 {
 
 pub const R_CARD: u8 = 16;
 pub const R_CTRL: u8 = 10;
-pub const GUTTER: f32 = 20.0;
 
 pub fn card_shadow() -> Shadow {
     Shadow {

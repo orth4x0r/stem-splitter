@@ -152,7 +152,9 @@ impl Shot {
             }
             "models" => {
                 app.page = Page::Models;
-                app.model_downloads.insert("htdemucs-6s".into(), Some(0.46));
+                if let Some(m) = app.backend.models.get(1) {
+                    app.model_downloads.insert(m.id.to_owned(), Some(0.46));
+                }
             }
             "library" => app.page = Page::Library,
             "settings" => app.page = Page::Settings,

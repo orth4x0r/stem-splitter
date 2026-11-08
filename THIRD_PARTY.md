@@ -11,3 +11,5 @@
 | HTDemucs / HTDemucs 6s weights (exported by the user, not bundled) | facebookresearch/demucs | MIT |
 | ONNX Runtime DirectML build (downloaded at runtime from NuGet, not bundled) | Microsoft.ML.OnnxRuntime.DirectML | MIT |
 | DirectML.dll (downloaded at runtime from NuGet, not bundled) | Microsoft.AI.DirectML | Microsoft Software License Terms (DirectML redistributable) |
+| Inter font (Regular, SemiBold, ExtraBold), embedded in `crates/stem-app/assets/fonts/` (converted from the npm `inter-ui` 4.1.1 woff2 to TTF) | [rsms/inter](https://rsms.me/inter/) | SIL OFL 1.1 (`Inter-OFL.txt`) |
+| JetBrains Mono font (Medium), embedded in `crates/stem-app/assets/fonts/` (converted from the npm `jetbrains-mono` 1.0.6 woff2 to TTF) | JetBrains Mono | SIL OFL 1.1 (`JetBrainsMono-OFL.txt`) |

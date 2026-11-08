@@ -117,8 +117,7 @@ impl<'a> Button<'a> {
         let r = CornerRadius::same((self.height * 0.32) as u8);
         let p = ui.painter();
 
-        let text_color;
-        match (self.kind, self.enabled) {
+        let text_color = match (self.kind, self.enabled) {
             (Kind::Primary, true) => {
                 paint::glow(
                     p,
@@ -141,7 +140,7 @@ impl<'a> Button<'a> {
                     },
                     Color32::from_white_alpha((14.0 + 14.0 * hover) as u8),
                 );
-                text_color = Color32::WHITE;
+                Color32::WHITE
             }
             (Kind::Danger, true) => {
                 let fill = theme::lerp_color(
@@ -156,13 +155,13 @@ impl<'a> Button<'a> {
                     Stroke::new(1.0, theme::alpha(theme::BAD, 0.5 + 0.5 * hover)),
                     StrokeKind::Inside,
                 );
-                text_color = theme::lerp_color(theme::BAD, Color32::WHITE, hover);
+                theme::lerp_color(theme::BAD, Color32::WHITE, hover)
             }
             (Kind::Ghost, true) => {
                 if hover > 0.0 {
                     p.rect_filled(rect, r, Color32::from_white_alpha((10.0 * hover) as u8));
                 }
-                text_color = theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, hover);
+                theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, hover)
             }
             (_, true) => {
                 let fill = theme::lerp_color(theme::CARD_HI, Color32::from_rgb(40, 38, 66), hover);
@@ -171,7 +170,7 @@ impl<'a> Button<'a> {
                     paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.18 * hover), 12.0);
                 }
                 p.rect(rect, r, fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
-                text_color = theme::lerp_color(theme::TEXT, Color32::WHITE, hover);
+                theme::lerp_color(theme::TEXT, Color32::WHITE, hover)
             }
             (_, false) => {
                 p.rect(
@@ -181,9 +180,9 @@ impl<'a> Button<'a> {
                     Stroke::new(1.0, theme::STROKE),
                     StrokeKind::Inside,
                 );
-                text_color = theme::TEXT_FAINT;
+                theme::TEXT_FAINT
             }
-        }
+        };
 
         let x0 = rect.center().x - content_w / 2.0;
         if let Some(icon) = self.icon {
