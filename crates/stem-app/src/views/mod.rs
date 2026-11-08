@@ -1,6 +1,7 @@
 //! Screens. `draw` lays out the chrome (header, sidebar) and dispatches to the current page.
 
 mod analysis_bar;
+mod chop;
 mod chrome;
 mod export_dialog;
 mod home;
@@ -17,6 +18,8 @@ use eframe::egui::{self, Margin};
 
 use crate::app::{Page, StemApp};
 use crate::theme;
+
+pub use chop::tick as chop_tick;
 
 pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     chrome::header(app, ui);

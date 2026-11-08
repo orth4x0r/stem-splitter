@@ -205,6 +205,13 @@ impl Player {
         self.shared = Some(shared);
     }
 
+    /// The output mixer (opening the device if needed), for extra sources such as the chop
+    /// pads' one-shot voices. `None` without an audio device.
+    pub fn mixer(&mut self) -> Option<rodio::mixer::Mixer> {
+        self.ensure_sink();
+        self.sink.as_ref().map(|s| s.mixer().clone())
+    }
+
     pub fn unload(&mut self) {
         if let Some(sh) = self.shared.take() {
             sh.alive.store(false, Relaxed);

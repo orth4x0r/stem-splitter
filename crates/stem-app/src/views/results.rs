@@ -37,6 +37,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut open_folder = false;
     let mut export_all = false;
     let mut new_split = false;
+    let mut chop_open = s.chop.open;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(
@@ -72,9 +73,29 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 .icon(Icon::Folder)
                 .show(ui)
                 .clicked();
+            ui.add_space(8.0);
+            buttons::segmented(
+                ui,
+                "results-view",
+                &mut chop_open,
+                &[(false, "Stems"), (true, "Chop")],
+            );
         });
     });
     ui.add_space(14.0);
+    if let Some(s) = &mut app.session
+        && s.chop.open != chop_open
+    {
+        s.chop.open = chop_open;
+        if chop_open {
+            s.chop.opened(s.selection);
+        }
+    }
+    if chop_open {
+        super::chop::page(app, ui);
+        header_actions(app, &out_dir, open_folder, export_all, new_split);
+        return;
+    }
 
     let playhead = app.player.position();
     let playing = app.player.is_playing();
@@ -369,8 +390,18 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         );
     }
 
+    header_actions(app, &out_dir, open_folder, export_all, new_split);
+}
+
+fn header_actions(
+    app: &mut StemApp,
+    out_dir: &std::path::Path,
+    open_folder: bool,
+    export_all: bool,
+    new_split: bool,
+) {
     if open_folder {
-        app.open_folder(&out_dir);
+        app.open_folder(out_dir);
     }
     if export_all {
         app.export_all_stems();

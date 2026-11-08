@@ -4,6 +4,7 @@ pub mod buttons;
 pub mod drag_handle;
 pub mod icons;
 pub mod overview;
+pub mod pads;
 pub mod paint;
 pub mod progress;
 pub mod toast;
