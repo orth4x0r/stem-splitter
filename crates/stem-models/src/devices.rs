@@ -102,6 +102,10 @@ mod dxgi {
             }
         };
         let mut out = Vec::new();
+        // The same physical GPU can be enumerated more than once (e.g. once more through an
+        // indirect display driver such as a VR/virtual monitor). Keep the first of each.
+        let mut seen_luid = std::collections::HashSet::new();
+        let mut seen_hw = std::collections::HashSet::new();
         for index in 0u32.. {
             // Fails with DXGI_ERROR_NOT_FOUND past the last adapter.
             let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
@@ -121,6 +125,18 @@ mod dxgi {
             let software = desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0
                 || name.contains("Microsoft Basic Render Driver");
             if software {
+                continue;
+            }
+            let luid = (desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+            let hw = (
+                desc.VendorId,
+                desc.DeviceId,
+                desc.SubSysId,
+                desc.Revision,
+                desc.DedicatedVideoMemory,
+            );
+            if !seen_luid.insert(luid) || !seen_hw.insert(hw) {
+                tracing::debug!("skipping duplicate DXGI adapter {index}: {name}");
                 continue;
             }
             out.push(GpuAdapter {

@@ -70,6 +70,11 @@ pub(crate) fn ensure(root: &Path, progress: &mut dyn FnMut(Progress)) -> Result<
     let lib = dir.join(library_file_name());
     #[cfg(windows)]
     if !lib.is_file() || !dir.join("DirectML.dll").is_file() {
+        tracing::info!(
+            "downloading ONNX Runtime {} (DirectML) from NuGet into {}",
+            crate::ORT_VERSION,
+            dir.display()
+        );
         nuget::fetch_windows_runtime(&dir, progress)?;
     }
     #[cfg(not(windows))]
