@@ -3,7 +3,8 @@
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
 //! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
-//! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
+//! queue, export, plus splash (launch intro), celebrate (completion burst) and empty (empty
+//! library).
 //! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
 
 use std::path::PathBuf;
@@ -125,7 +126,54 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "results-zoom" | "celebrate" => {
+            "queue" => {
+                use crate::queue::ItemStatus;
+                let model = app.backend.model(None).cloned();
+                let src = |u: &str| InputSource::Url(u.to_owned());
+                let q = &mut app.queue;
+                let done = q.push(src("https://www.youtube.com/watch?v=a1"), false);
+                let run = q.push(src("https://soundcloud.com/someone/soul-flip"), false);
+                let p1 = q.push(src("https://www.youtube.com/watch?v=c3"), false);
+                q.push(src("https://x.com/someone/status/1"), false);
+                let pl = q.push(src("https://www.youtube.com/playlist?list=PLdemo"), true);
+                let bad = q.push(src("https://www.youtube.com/watch?v=gone"), false);
+                let entry = app.settings.history[0].clone();
+                let titles = [
+                    (done, "Midnight Drive (demo beat)"),
+                    (run, "Soul Sample Flip 1972"),
+                    (p1, "Dusty Breaks Vol. 2"),
+                    (pl, "Playlist: crate digging"),
+                ];
+                for (id, t) in titles {
+                    if let Some(i) = q.get_mut(id) {
+                        i.title = t.into();
+                    }
+                }
+                if let Some(i) = q.get_mut(done) {
+                    i.status = ItemStatus::Done(Box::new(entry));
+                }
+                if let Some(i) = q.get_mut(run) {
+                    i.status = ItemStatus::Running { job_id: 999 };
+                }
+                if let Some(i) = q.get_mut(bad) {
+                    i.status = ItemStatus::Failed("yt-dlp: Video unavailable".into());
+                }
+                app.job = Some(RunningJob {
+                    id: 999,
+                    source: src("https://soundcloud.com/someone/soul-flip"),
+                    title: "Soul Sample Flip 1972".into(),
+                    model_name: model.as_ref().map_or("", |m| m.name).into(),
+                    stems: model.map(|m| m.stems).unwrap_or_default(),
+                    stage: Stage::Separating,
+                    detail: "HTDemucs 4-stem".into(),
+                    frac: Some(0.37),
+                    started: -21.0,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    shown: Stage::Separating.overall(0.37),
+                    reopening: false,
+                });
+            }
+            "results" | "results-zoom" | "celebrate" | "export" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -175,7 +223,13 @@ impl Shot {
                     });
                 }
                 app.player.seek(12.1);
-                app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                if self.scene == "export" {
+                    app.settings.export_without = true;
+                    app.settings.export_format = crate::settings::ExportFormat::Flac24;
+                    app.export_all_stems();
+                } else {
+                    app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                }
                 if self.scene == "celebrate" {
                     app.fx.celebrate(
                         kinds.iter().map(|k| crate::theme::stem_color(*k)).collect(),
@@ -190,7 +244,19 @@ impl Shot {
             "models" => {
                 app.page = Page::Models;
                 if let Some(m) = app.backend.models.get(1) {
-                    app.model_downloads.insert(m.id.to_owned(), Some(0.46));
+                    let total = m.size_bytes.max(1);
+                    app.model_downloads.insert(
+                        m.id.to_owned(),
+                        crate::app::ModelDl {
+                            status: stem_models::DownloadStatus {
+                                done: total * 46 / 100,
+                                total: Some(total),
+                                bytes_per_sec: 9.4e6,
+                                resumed_from: 0,
+                            },
+                            cancel: Arc::new(AtomicBool::new(false)),
+                        },
+                    );
                 }
             }
             "library" => app.page = Page::Library,

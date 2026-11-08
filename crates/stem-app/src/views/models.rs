@@ -56,7 +56,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     .ctx()
                     .animate_bool_with_time(resp.id, resp.hovered(), 0.15);
                 let s = ui.ctx().animate_bool_with_time(resp.id.with("s"), sel, 0.2);
-                let downloading = app.model_downloads.get(m.id).copied();
+                let downloading = app.model_downloads.get(m.id).map(|d| d.status);
+                let partial = if downloading.is_none() && !app.backend.is_downloaded(m.id) {
+                    app.backend.manager().partial_bytes(m)
+                } else {
+                    0
+                };
                 let ready = app.backend.is_downloaded(m.id);
                 let soon = app.backend.needs_manual_export(m);
                 let idx = models.iter().position(|x| x.id == m.id).unwrap_or(0);
@@ -207,40 +212,44 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     pos2(rect.right() - 20.0, rect.bottom() - 18.0),
                 );
                 let p = ui.painter().clone();
-                if let Some(frac) = downloading {
+                if let Some(st) = downloading {
+                    let frac = st.fraction();
                     let bar = Rect::from_min_size(
                         pos2(foot.left(), foot.center().y + 4.0),
                         vec2(foot.width() - 60.0, 6.0),
                     );
                     progress::bar(&p, bar, frac, t);
-                    let label = frac.map_or("Downloading…".to_owned(), |f| {
-                        format!(
-                            "Downloading  {:.0}%  ·  {} of {}",
-                            f * 100.0,
-                            human_bytes((f as f64 * m.size_bytes as f64) as u64),
-                            human_bytes(m.size_bytes)
-                        )
-                    });
                     p.text(
                         pos2(foot.left(), foot.top() + 6.0),
                         Align2::LEFT_CENTER,
-                        label,
+                        crate::views::models_dl::label(&st, m.size_bytes),
                         theme::mono(11.5),
                         theme::TEXT_DIM,
                     );
-                    progress::ring(
-                        &p,
-                        pos2(foot.right() - 20.0, foot.center().y + 2.0),
-                        12.0,
-                        3.0,
-                        frac,
-                        t,
+                    let cr = Rect::from_center_size(
+                        pos2(foot.right() - 16.0, foot.center().y + 2.0),
+                        vec2(30.0, 30.0),
                     );
+                    let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cr));
+                    if buttons::icon_button(
+                        &mut cu,
+                        Icon::Close,
+                        30.0,
+                        false,
+                        theme::BAD,
+                        "Pause download (resumes where it left off)",
+                    )
+                    .clicked()
+                    {
+                        app.cancel_model_download(m.id);
+                    }
                 } else {
                     let (dot, status) = if ready {
                         (theme::GOOD, "Installed")
                     } else if soon {
                         (theme::WARN, "Coming soon · needs a manual ONNX export")
+                    } else if partial > 0 {
+                        (theme::WARN, "Paused")
                     } else {
                         (theme::TEXT_FAINT, "Not downloaded")
                     };
@@ -254,9 +263,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     );
                     // Size and a short license tag; the full license is in the tooltip.
                     let short_license = m.license.split([' ', '(']).next().unwrap_or(m.license);
+                    let size = if partial > 0 {
+                        format!("{} of {}", human_bytes(partial), human_bytes(m.size_bytes))
+                    } else {
+                        human_bytes(m.size_bytes)
+                    };
                     let meta = format!(
                         "{}  ·  {}  ·  {:.1} kHz",
-                        human_bytes(m.size_bytes),
+                        size,
                         short_license,
                         m.sample_rate as f32 / 1000.0
                     );
@@ -279,7 +293,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     if soon {
                         // Nothing to click: see the model's description / tools/export script.
                     } else if !ready {
-                        if Button::new("Download")
+                        if Button::new(if partial > 0 { "Resume" } else { "Download" })
                             .icon(Icon::Download)
                             .height(32.0)
                             .show(&mut bu)

@@ -31,6 +31,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         platforms(ui);
         ui.add_space(if compact { 16.0 } else { 22.0 });
+        super::queue::panel(app, ui);
         drop_zone(app, ui, now, if compact { 186.0 } else { 220.0 });
         ui.add_space(if compact { 20.0 } else { 28.0 });
         model_strip(app, ui);
@@ -162,8 +163,10 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
             .id(id)
             .frame(egui::Frame::NONE)
             .hint_text(
-                egui::RichText::new("Paste a YouTube, X, SoundCloud or audio link…")
-                    .color(theme::TEXT_FAINT),
+                egui::RichText::new(
+                    "Paste YouTube, X, SoundCloud or audio links (several queue up)…",
+                )
+                .color(theme::TEXT_FAINT),
             )
             .font(theme::regular(16.0))
             .text_color(theme::TEXT)

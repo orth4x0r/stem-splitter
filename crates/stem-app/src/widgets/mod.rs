@@ -1,6 +1,7 @@
 //! Custom widgets and painting helpers.
 
 pub mod buttons;
+pub mod drag_handle;
 pub mod icons;
 pub mod meter;
 pub mod overview;

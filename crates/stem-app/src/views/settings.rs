@@ -32,7 +32,7 @@ fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut
     ui.add_space(14.0);
 }
 
-fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(190.0, 34.0), Sense::hover());
         ui.painter().text(
@@ -88,11 +88,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     app.open_folder(&d);
                 }
             });
-            row(ui, "WAV format", |ui| {
+            row(ui, "Stem files (WAV)", |ui| {
                 let opts: Vec<(WavChoice, &str)> =
                     WavChoice::ALL.iter().map(|w| (*w, w.label())).collect();
                 buttons::segmented(ui, "wav", &mut app.settings.wav, &opts);
             });
+            super::settings_tools::export_format_row(app, ui);
         },
     );
 
@@ -176,6 +177,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         .color(theme::TEXT_FAINT),
                 );
             });
+            super::settings_tools::ffmpeg_row(app, ui);
         },
     );
 
@@ -218,6 +220,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     app.open_folder(&d);
                 }
             });
+            super::settings_tools::cache_row(app, ui);
         },
     );
 

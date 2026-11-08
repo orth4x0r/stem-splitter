@@ -37,6 +37,7 @@ use stem_audio::AudioBuffer;
 
 pub use catalog::{find_model, registry};
 pub use devices::{GpuAdapter, gpu_adapters, list_devices};
+pub use download::DownloadStatus;
 pub use runtime::{DIRECTML_VERSION, ORT_VERSION};
 
 #[derive(Debug, thiserror::Error)]

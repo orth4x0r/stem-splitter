@@ -7,6 +7,7 @@
 
 mod http;
 mod names;
+mod playlist;
 mod process;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use names::Source;
 pub use names::sanitize_file_stem;
+pub use playlist::{Playlist, PlaylistEntry, is_playlist_url, parse_flat_playlist};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
@@ -178,6 +180,14 @@ impl Fetcher {
             ffmpeg,
             self.cookies_from_browser.as_deref(),
         )
+    }
+
+    /// List the tracks of a playlist / album / set URL (see [`is_playlist_url`]) without
+    /// downloading them, via `yt-dlp --flat-playlist`. yt-dlp is downloaded first if needed.
+    pub fn expand_playlist(&self, url: &str, cancel: &AtomicBool) -> Result<Playlist> {
+        let ytdlp = self.ensure_ytdlp(&mut |_| {})?;
+        let args = playlist::args(url, self.cookies_from_browser.as_deref());
+        playlist::run(&ytdlp, &args, cancel)
     }
 
     /// Path to a working yt-dlp, downloading it into `tools_dir` if missing.
