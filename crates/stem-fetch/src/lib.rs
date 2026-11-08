@@ -139,13 +139,34 @@ impl Fetcher {
         let ffmpeg = self.find_ffmpeg();
         let args = self.ytdlp_args(url, ffmpeg.as_deref());
         progress(FetchProgress::Preparing("Looking up media".into()));
-        ytdlp::run(
+        let first = ytdlp::run(
             &ytdlp,
             &args,
             self.cookies_from_browser.is_none(),
             progress,
             cancel,
-        )
+        );
+        // Chromium browsers on Windows lock (and app-bound-encrypt) their cookie database, so
+        // borrowing cookies often fails even though the video itself is public. Retry once
+        // without cookies rather than failing the whole split.
+        match (first, self.cookies_from_browser.as_deref()) {
+            (Err(FetchError::YtDlp(msg)), Some(browser)) if is_cookie_error(&msg) => {
+                tracing::warn!("cookies from {browser} unavailable ({msg}); retrying without");
+                progress(FetchProgress::Preparing(format!(
+                    "Couldn't read {browser} cookies, continuing without them"
+                )));
+                let args = ytdlp::args(url, &self.download_dir, ffmpeg.as_deref(), None);
+                ytdlp::run(&ytdlp, &args, false, progress, cancel).map_err(|e| match e {
+                    FetchError::YtDlp(m) => FetchError::YtDlp(format!(
+                        "{m} (browser cookies from {browser} could not be read: if this post \
+                         needs a login, close {browser} completely and retry, or pick Firefox \
+                         in Settings)"
+                    )),
+                    other => other,
+                })
+            }
+            (result, _) => result,
+        }
     }
 
     /// The yt-dlp arguments (after the program name) [`Fetcher::fetch`] uses for `url`, given the
@@ -229,6 +250,22 @@ impl Fetcher {
         let _ = std::fs::remove_file(&zip);
         result
     }
+}
+
+/// True for yt-dlp errors about reading a browser's cookie store (as opposed to the site
+/// rejecting the request), e.g. "Could not copy Chrome cookie database" or
+/// "Failed to decrypt with DPAPI".
+pub fn is_cookie_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    (m.contains("cookie") || m.contains("dpapi"))
+        && (m.contains("could not copy")
+            || m.contains("database")
+            || m.contains("decrypt")
+            || m.contains("could not find")
+            || m.contains("keyring")
+            || m.contains("permission denied")
+            || m.contains("app-bound")
+            || m.contains("failed to load"))
 }
 
 /// Local file paths (and `file://` URLs) are passed straight through by [`Fetcher::fetch`].

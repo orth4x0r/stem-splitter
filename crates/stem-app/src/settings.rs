@@ -35,9 +35,10 @@ impl WavChoice {
     }
 }
 
-/// Browsers yt-dlp can borrow cookies from.
+/// Browsers yt-dlp can borrow cookies from. Firefox first: on Windows, Chromium-based browsers
+/// lock and encrypt their cookie store, so yt-dlp usually can't read it while they run.
 pub const COOKIE_BROWSERS: [&str; 8] = [
-    "chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium", "safari",
+    "firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "safari",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

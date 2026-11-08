@@ -425,3 +425,17 @@ fn online_youtube() {
     eprintln!("{got:?}");
     assert!(got.path.is_file());
 }
+
+#[test]
+fn cookie_errors_are_recognised() {
+    assert!(is_cookie_error(
+        "Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info"
+    ));
+    assert!(is_cookie_error(
+        "Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927"
+    ));
+    assert!(!is_cookie_error("Video unavailable"));
+    assert!(!is_cookie_error(
+        "Sign in to confirm your age (this may need a signed-in browser: set the cookies browser option)"
+    ));
+}

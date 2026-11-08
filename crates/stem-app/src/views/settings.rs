@@ -143,7 +143,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         }
                     });
                 ui.label(
-                    egui::RichText::new("for age-restricted / private posts")
+                    egui::RichText::new("private / age-restricted posts · Firefox works best")
                         .font(theme::regular(12.0))
                         .color(theme::TEXT_FAINT),
                 );
