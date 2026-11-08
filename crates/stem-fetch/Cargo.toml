@@ -11,3 +11,9 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "stream"] }
+url = "2.5"
+percent-encoding = "2.3"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+tempfile = "3"
