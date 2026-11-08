@@ -1,0 +1,6 @@
+/target
+*.onnx
+*.wav
+!crates/**/testdata/*.wav
+/models
+/.claude/worktrees
