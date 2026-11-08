@@ -4390,6 +4390,7 @@ dependencies = [
  "ndarray",
  "ort",
  "rayon",
+ "realfft",
  "reqwest",
  "serde",
  "serde_json",

@@ -144,12 +144,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 theme::semi(16.0),
                 theme::TEXT,
             );
-            let meta = format!(
+            let mut meta = format!(
                 "{}  ·  {}  ·  {}",
                 e.model_name,
                 mmss(e.duration_secs),
                 relative_time(e.when)
             );
+            if let Some(m) = crate::analysis::history_tag(e.bpm, e.key.as_deref()) {
+                meta = format!("{m}  ·  {meta}");
+            }
             p.text(
                 pos2(x, rect.top() + 48.0),
                 Align2::LEFT_CENTER,

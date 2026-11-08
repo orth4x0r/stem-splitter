@@ -6,6 +6,7 @@
 //! * `STEM_SHOT=out.png STEM_SCENE=<scene>`  render a scene, save a screenshot, exit
 //!   (see `shot.rs`).
 
+mod analysis;
 mod app;
 mod backend;
 mod demo;
@@ -17,6 +18,7 @@ mod settings;
 mod shot;
 mod splash;
 mod theme;
+mod timeline;
 mod views;
 mod waveform;
 mod widgets;

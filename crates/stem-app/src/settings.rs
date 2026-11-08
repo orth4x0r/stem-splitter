@@ -51,6 +51,12 @@ pub struct HistoryEntry {
     /// Unix seconds.
     pub when: u64,
     pub duration_secs: f64,
+    /// Tempo as last shown (after any halve / double).
+    #[serde(default)]
+    pub bpm: Option<f32>,
+    /// "A minor".
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +73,10 @@ pub struct Settings {
     pub sample_fade_ms: f32,
     /// Loop the selected region during playback.
     pub loop_region: bool,
+    /// Snap selection edges to the beat grid.
+    pub snap: crate::analysis::SnapMode,
+    /// Exported samples: trim selections that are nearly N bars to exactly N bars.
+    pub export_loop_bars: bool,
     pub history: Vec<HistoryEntry>,
     /// Turn off ambient drift, springs, entrances, confetti and the launch intro.
     pub reduce_motion: bool,
@@ -85,6 +95,8 @@ impl Default for Settings {
             normalize_samples: true,
             sample_fade_ms: 6.0,
             loop_region: true,
+            snap: crate::analysis::SnapMode::default(),
+            export_loop_bars: true,
             history: Vec::new(),
             reduce_motion: false,
             intro: true,

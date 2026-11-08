@@ -102,10 +102,10 @@ impl Backend {
             .or_else(|| self.models.iter().find(|m| self.is_available(m)))
     }
 
-    /// HTDemucs weights aren't hosted (they need a manual ONNX export); until the file is in
+    /// Models without hosted weights (they need a manual ONNX export); until the file is in
     /// the models folder they're shown as "coming soon".
     pub fn needs_manual_export(&self, m: &ModelInfo) -> bool {
-        !self.demo && matches!(m.arch, ModelArch::HtDemucs { .. }) && !self.is_downloaded(m.id)
+        !self.demo && m.needs_manual_export() && !self.is_downloaded(m.id)
     }
 
     pub fn is_available(&self, m: &ModelInfo) -> bool {

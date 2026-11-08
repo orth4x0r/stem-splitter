@@ -1,5 +1,6 @@
 //! Screens. `draw` lays out the chrome (header, sidebar) and dispatches to the current page.
 
+mod analysis_bar;
 mod chrome;
 mod home;
 mod library;
@@ -15,7 +16,7 @@ use crate::theme::{self, motion};
 use crate::widgets::paint;
 
 /// Height of the results transport bar (see `results::transport`).
-const TRANSPORT_H: f32 = 78.0;
+const TRANSPORT_H: f32 = 98.0;
 
 pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
