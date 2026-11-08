@@ -1,0 +1,26 @@
+[package]
+name = "stem-app"
+description = "Stem Splitter desktop app (egui)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "stem-splitter"
+path = "src/main.rs"
+
+[dependencies]
+stem-audio.workspace = true
+stem-fetch.workspace = true
+stem-models.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing-subscriber = "0.3"
+eframe = "0.37"
+egui_extras = "0.37"
+rodio = "0.23"
+rfd = "0.18"
+directories = "6"
+crossbeam-channel = "0.5"

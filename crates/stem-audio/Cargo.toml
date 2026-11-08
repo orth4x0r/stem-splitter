@@ -1,0 +1,13 @@
+[package]
+name = "stem-audio"
+description = "Decode, resample, write and STFT audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+symphonia = { version = "0.6", features = ["all"] }
+rubato = "5"
+hound = "3.5"
+realfft = "3.5"
