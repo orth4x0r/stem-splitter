@@ -1,5 +1,13 @@
 //! Background work. Everything slow runs on worker threads and reports back through one
 //! channel of [`AppEvent`]s; the UI thread only polls it.
+//!
+//! Chains / presets (several models in a row, ensembles) and the stem cache live in the
+//! `chain` and `cache` submodules; `refine` runs one more model on a stem of the open session
+//! (drum parts, vocal clean-up).
+
+pub mod cache;
+pub mod chain;
+pub mod refine;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,12 +16,13 @@ use std::time::Duration;
 
 use crossbeam_channel::Sender;
 use eframe::egui;
-use stem_audio::{AudioBuffer, WavFormat};
+use stem_audio::{AudioBuffer, AudioFormat, WavFormat};
 use stem_fetch::{FetchProgress, Fetcher};
-use stem_models::{Device, ModelInfo, ModelManager, Progress, StemKind};
+use stem_models::{Device, DownloadStatus, ModelInfo, ModelManager, Progress, StemKind};
 
 use crate::backend::guard;
 use crate::paths::{AppPaths, sanitize_file_name};
+use crate::section::{Origin, SplitRange};
 use crate::waveform::{BUCKETS, Envelope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +117,12 @@ pub struct JobRequest {
     pub cookies_from_browser: Option<String>,
     pub paths: AppPaths,
     pub demo: bool,
+    /// Split only this part of the input (pre-split step / "Re-split this selection").
+    pub range: Option<SplitRange>,
+    /// Title to use instead of guessing one from the source (an already fetched file).
+    pub title: Option<String>,
+    /// Run a preset's chain (through the stem cache) instead of the single `model`.
+    pub chain: Option<chain::ChainSpec>,
 }
 
 pub struct StemOut {
@@ -121,6 +136,18 @@ pub struct JobOutput {
     pub title: String,
     pub out_dir: PathBuf,
     pub stems: Vec<StemOut>,
+    /// Tempo / beat grid / key, `None` if analysis failed.
+    pub analysis: Option<crate::analysis::TrackAnalysis>,
+    /// Where the stems came from (source, local input, section), for "Re-split".
+    pub origin: Origin,
+}
+
+/// Tempo and key detection over the finished stems (well under a second).
+fn analyze(stems: &[StemOut]) -> Option<crate::analysis::TrackAnalysis> {
+    let refs: Vec<_> = stems.iter().map(|s| (s.kind, &s.audio)).collect();
+    guard("analysis", || crate::analysis::analyze_stems(&refs))
+        .ok()
+        .flatten()
 }
 
 pub enum JobEvent {
@@ -128,6 +155,8 @@ pub enum JobEvent {
     /// Fraction of the current stage, `None` = indeterminate.
     Progress(Option<f32>),
     Title(String),
+    /// The pre-split step has the decoded input ready for picking a section.
+    Prepared(Box<crate::section::Prepared>),
     Done(Box<JobOutput>),
     Failed(String),
     Cancelled,
@@ -135,11 +164,18 @@ pub enum JobEvent {
 
 pub enum AppEvent {
     Job(u64, JobEvent),
-    ModelProgress(String, Option<f32>),
+    ModelProgress(String, DownloadStatus),
     ModelDone(String, Result<(), String>),
-    Notice(Result<String, String>),
     YtDlpUpdated(Result<String, String>),
     SampleExported(Result<PathBuf, String>),
+    /// Queue item id, and the playlist's (title, url) entries.
+    PlaylistExpanded(u64, Result<Vec<(Option<String>, String)>, String>),
+    FfmpegProgress(Option<f32>, String),
+    FfmpegDone(Result<PathBuf, String>),
+    /// Message and destination folder.
+    StemsExported(Result<(String, PathBuf), String>),
+    /// "Split drums" / "Clean vocals" on a session stem.
+    Refine(u64, refine::RefineEvent),
 }
 
 /// Sends events and wakes the UI.
@@ -167,7 +203,9 @@ pub fn spawn_job(req: JobRequest, cancel: Arc<AtomicBool>, n: Notifier) {
             let id = req.id;
             let send = |ev| n.send(AppEvent::Job(id, ev));
             let result = guard("split", || {
-                if req.demo {
+                if let Some(spec) = &req.chain {
+                    chain::run(&req, spec, &cancel, &send)
+                } else if req.demo {
                     run_demo(&req, &cancel, &send)
                 } else {
                     run_real(&req, &cancel, &send)
@@ -201,10 +239,19 @@ fn model_progress(send: Emit<'_>) -> impl FnMut(Progress) + '_ {
     }
 }
 
-fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<JobOutput, String> {
-    // 1. Fetch
-    let (path, title) = match &req.source {
-        InputSource::File(p) => (p.clone(), req.source.provisional_title()),
+/// Fetch `req.source` to a local file (a no-op for files). Returns the path and the title.
+pub(crate) fn fetch_input(
+    req: &JobRequest,
+    cancel: &AtomicBool,
+    send: Emit<'_>,
+) -> Result<(PathBuf, String), String> {
+    Ok(match &req.source {
+        InputSource::File(p) => (
+            p.clone(),
+            req.title
+                .clone()
+                .unwrap_or_else(|| req.source.provisional_title()),
+        ),
         InputSource::Url(url) => {
             send(JobEvent::Stage(Stage::Fetching, "Grabbing audio".into()));
             let mut fetcher = Fetcher::new(req.paths.tools.clone(), req.paths.downloads.clone());
@@ -231,13 +278,21 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
             send(JobEvent::Title(fetched.title.clone()));
             (fetched.path, fetched.title)
         }
-    };
+    })
+}
+
+fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<JobOutput, String> {
+    // 1. Fetch
+    let (path, title) = fetch_input(req, cancel, send)?;
     check(cancel)?;
 
     // 2. Decode
     send(JobEvent::Stage(Stage::Decoding, "Reading audio".into()));
     send(JobEvent::Progress(None));
     let mix = stem_audio::decode_file(&path).map_err(|e| e.to_string())?;
+    // Only the chosen section (plus a little padding the model sees as context).
+    let cut = crate::section::cut(&mix, req.range);
+    drop(mix);
     check(cancel)?;
 
     // 3. Runtime + model
@@ -280,12 +335,16 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
     ));
     send(JobEvent::Progress(Some(0.0)));
     let stems = sep
-        .separate(&mix, &mut model_progress(send), cancel)
+        .separate(&cut.audio, &mut model_progress(send), cancel)
         .map_err(|e| e.to_string())?;
+    let stems = cut.trim(stems);
     check(cancel)?;
 
     // 5. Write
-    write_stems(req, &title, stems, send)
+    let mut out = write_stems(req, &title, stems, send)?;
+    out.origin.input = Some(path);
+    out.origin.save(&out.out_dir);
+    Ok(out)
 }
 
 fn write_stems(
@@ -295,7 +354,8 @@ fn write_stems(
     send: Emit<'_>,
 ) -> Result<JobOutput, String> {
     send(JobEvent::Stage(Stage::Writing, "Saving WAVs".into()));
-    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(title)));
+    let dir_name = crate::section::dir_name(title, req.range);
+    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(&dir_name)));
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     let n = stems.len().max(1);
     let mut out = Vec::new();
@@ -311,10 +371,30 @@ fn write_stems(
         });
         send(JobEvent::Progress(Some((i + 1) as f32 / n as f32)));
     }
+    send(JobEvent::Stage(
+        Stage::Writing,
+        "Detecting tempo & key".into(),
+    ));
+    send(JobEvent::Progress(None));
+    let analysis = analyze(&out);
+    // Tempo / key in the WAVs themselves, so a stem dragged into a DAW lands in time.
+    let meta = crate::export::wav_meta(analysis.as_ref(), false, None);
+    if !meta.is_empty() {
+        for s in &out {
+            let _ = stem_audio::wavmeta::apply_to_file(&s.path, &meta);
+        }
+    }
     Ok(JobOutput {
         title: title.to_owned(),
         out_dir,
         stems: out,
+        analysis,
+        origin: Origin {
+            source: req.source.display(),
+            input: None,
+            range: req.range,
+            model_name: req.model.name.to_owned(),
+        },
     })
 }
 
@@ -356,44 +436,71 @@ fn run_demo(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
         format!("Loading {}", req.model.name),
     ));
     std::thread::sleep(Duration::from_millis(700));
+    // After the pre-split step the demo plays a longer arrangement, cut to the section.
+    let arranged = req.title.is_some() || req.range.is_some();
     let stems: Vec<_> = req
         .model
         .stems
         .iter()
-        .map(|k| (*k, crate::demo::stem(*k)))
+        .map(|k| {
+            let audio = if arranged {
+                crate::section::demo_arrangement(*k)
+            } else {
+                crate::demo::stem(*k)
+            };
+            (*k, crate::section::slice(&audio, req.range))
+        })
         .collect();
     tick(Stage::Separating, req.model.name, 120, 40)?;
-    let title = match &req.source {
-        InputSource::File(_) => req.source.provisional_title(),
-        InputSource::Url(_) => crate::demo::DEMO_TITLE.to_owned(),
+    let title = match (&req.title, &req.source) {
+        (Some(t), _) => t.clone(),
+        (None, InputSource::File(_)) => req.source.provisional_title(),
+        (None, InputSource::Url(_)) => crate::demo::DEMO_TITLE.to_owned(),
     };
     let mut req = req.clone();
     req.output_root = std::env::temp_dir().join("stem-splitter-demo");
-    write_stems(&req, &title, stems, send)
+    let mut out = write_stems(&req, &title, stems, send)?;
+    if let InputSource::File(p) = &req.source {
+        out.origin.input = Some(p.clone());
+    }
+    out.origin.save(&out.out_dir);
+    Ok(out)
 }
 
 // ---- smaller tasks -------------------------------------------------------------------------
 
-pub fn spawn_model_download(info: ModelInfo, models_dir: PathBuf, demo: bool, n: Notifier) {
+/// Download a model; `cancel` pauses it (the partial file is kept and resumed next time).
+pub fn spawn_model_download(
+    info: ModelInfo,
+    models_dir: PathBuf,
+    demo: bool,
+    cancel: Arc<AtomicBool>,
+    n: Notifier,
+) {
     std::thread::spawn(move || {
         let id = info.id.to_owned();
         let result = guard("model download", || {
             if demo {
-                for i in 0..=100 {
-                    n.send(AppEvent::ModelProgress(id.clone(), Some(i as f32 / 100.0)));
+                let total = info.size_bytes.max(1);
+                for i in 0..=100u64 {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_owned());
+                    }
+                    let st = DownloadStatus {
+                        done: total * i / 100,
+                        total: Some(total),
+                        bytes_per_sec: total as f64 / 2.5,
+                        resumed_from: 0,
+                    };
+                    n.send(AppEvent::ModelProgress(id.clone(), st));
                     std::thread::sleep(Duration::from_millis(25));
                 }
                 return Ok(());
             }
             let mgr = ModelManager::new(models_dir);
-            let cancel = AtomicBool::new(false);
-            mgr.download(
+            mgr.download_with_status(
                 &info,
-                &mut |p| {
-                    if let Progress::Downloading { fraction } = p {
-                        n.send(AppEvent::ModelProgress(id.clone(), fraction));
-                    }
-                },
+                &mut |st| n.send(AppEvent::ModelProgress(id.clone(), *st)),
                 &cancel,
             )
             .map(|_| ())
@@ -426,58 +533,118 @@ pub struct SampleExport {
     pub end: f64,
     pub fade_ms: f32,
     pub normalize: bool,
-    pub format: WavFormat,
+    pub format: AudioFormat,
     pub path: PathBuf,
+    /// Tempo / key / loop chunks for WAV output (loop end is clamped to the clip).
+    pub meta: stem_audio::wavmeta::WavMeta,
+}
+
+/// Slice + fade + normalise + write one sample (blocking). Returns the written path.
+pub fn render_sample(job: &SampleExport) -> Result<PathBuf, String> {
+    let parts: Vec<AudioBuffer> = job
+        .include
+        .iter()
+        .filter_map(|&i| job.stems.get(i))
+        .map(|b| {
+            let sr = b.sample_rate as f64;
+            b.slice((job.start * sr) as usize, (job.end * sr) as usize)
+        })
+        .collect();
+    let mut clip = match parts.len() {
+        0 => return Err("nothing selected".to_owned()),
+        1 => parts.into_iter().next().unwrap_or_default(),
+        _ => AudioBuffer::mix(&parts.iter().collect::<Vec<_>>()),
+    };
+    let sr = clip.sample_rate as f64;
+    let fade = (job.fade_ms as f64 / 1000.0 * sr) as usize;
+    let fade = fade.min(clip.frames() / 2);
+    clip.fade(fade, fade);
+    if job.normalize {
+        clip.normalize(0.989); // -0.1 dBFS
+    }
+    if let Some(dir) = job.path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let n = clip.frames() as u32;
+    let mut meta = job.meta;
+    meta.loop_frames = meta.loop_frames.map(|(a, b)| (a.min(n), b.min(n)));
+    stem_audio::wavmeta::write_audio_meta(&job.path, &clip, job.format, &meta)
+        .map_err(|e| e.to_string())?;
+    Ok(job.path.clone())
 }
 
 /// Slice + fade + normalise + write one sample.
 pub fn spawn_sample_export(job: SampleExport, n: Notifier) {
     std::thread::spawn(move || {
-        let result = guard("export sample", || {
-            let parts: Vec<AudioBuffer> = job
-                .include
-                .iter()
-                .filter_map(|&i| job.stems.get(i))
-                .map(|b| {
-                    let sr = b.sample_rate as f64;
-                    b.slice((job.start * sr) as usize, (job.end * sr) as usize)
-                })
-                .collect();
-            let mut clip = match parts.len() {
-                0 => return Err("nothing selected".to_owned()),
-                1 => parts.into_iter().next().unwrap_or_default(),
-                _ => AudioBuffer::mix(&parts.iter().collect::<Vec<_>>()),
-            };
-            let sr = clip.sample_rate as f64;
-            let fade = (job.fade_ms as f64 / 1000.0 * sr) as usize;
-            let fade = fade.min(clip.frames() / 2);
-            clip.fade(fade, fade);
-            if job.normalize {
-                clip.normalize(0.989); // -0.1 dBFS
-            }
-            if let Some(dir) = job.path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            stem_audio::write_wav(&job.path, &clip, job.format).map_err(|e| e.to_string())?;
-            Ok(job.path.clone())
-        });
+        let result = guard("export sample", || render_sample(&job));
         n.send(AppEvent::SampleExported(result.and_then(|r| r)));
     });
 }
 
-/// Copy the written stems into another folder.
-pub fn spawn_copy_stems(files: Vec<PathBuf>, dest: PathBuf, n: Notifier) {
+/// List a playlist's entries for the queue.
+pub fn spawn_playlist_expand(
+    item: u64,
+    url: String,
+    paths: AppPaths,
+    cookies: Option<String>,
+    demo: bool,
+    n: Notifier,
+) {
     std::thread::spawn(move || {
-        let count = files.len();
-        let result = (|| -> Result<String, String> {
-            std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-            for f in &files {
-                let name = f.file_name().ok_or("bad file name")?;
-                std::fs::copy(f, dest.join(name)).map_err(|e| format!("{}: {e}", f.display()))?;
+        let result = guard(
+            "playlist",
+            || -> Result<Vec<(Option<String>, String)>, String> {
+                if demo {
+                    std::thread::sleep(Duration::from_millis(600));
+                    return Ok((1..=3)
+                        .map(|i| {
+                            (
+                                Some(format!("Playlist track {i}")),
+                                format!("https://www.youtube.com/watch?v=demo{i}"),
+                            )
+                        })
+                        .collect());
+                }
+                let mut f = Fetcher::new(paths.tools.clone(), paths.downloads.clone());
+                f.cookies_from_browser = cookies;
+                let never = AtomicBool::new(false);
+                let list = f.expand_playlist(&url, &never).map_err(|e| e.to_string())?;
+                Ok(list.entries.into_iter().map(|e| (e.title, e.url)).collect())
+            },
+        );
+        n.send(AppEvent::PlaylistExpanded(item, result.and_then(|r| r)));
+    });
+}
+
+/// Install ffmpeg into the tools folder (Windows; elsewhere this reports how to get it).
+pub fn spawn_ffmpeg_install(paths: AppPaths, demo: bool, n: Notifier) {
+    std::thread::spawn(move || {
+        let result = guard("ffmpeg install", || -> Result<PathBuf, String> {
+            if demo {
+                for i in 0..=50 {
+                    n.send(AppEvent::FfmpegProgress(
+                        Some(i as f32 / 50.0),
+                        "Downloading ffmpeg".into(),
+                    ));
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                return Ok(paths.tools.join("ffmpeg.exe"));
             }
-            Ok(format!("Exported {count} stems to {}", dest.display()))
-        })();
-        n.send(AppEvent::Notice(result));
+            let f = Fetcher::new(paths.tools.clone(), paths.downloads.clone());
+            let mut msg = String::from("Starting");
+            f.ensure_ffmpeg(&mut |p| match p {
+                FetchProgress::Preparing(m) => {
+                    msg = m;
+                    n.send(AppEvent::FfmpegProgress(None, msg.clone()));
+                }
+                FetchProgress::Downloading { fraction, .. } => {
+                    n.send(AppEvent::FfmpegProgress(fraction, msg.clone()));
+                }
+                FetchProgress::Converting => {}
+            })
+            .map_err(|e| e.to_string())
+        });
+        n.send(AppEvent::FfmpegDone(result.and_then(|r| r)));
     });
 }
 
@@ -514,10 +681,13 @@ pub fn spawn_load_history(
                     (i + 1) as f32 / kinds.len().max(1) as f32,
                 )));
             }
+            let analysis = analyze(&stems);
             Ok(JobOutput {
                 title: title.clone(),
                 out_dir: out_dir.clone(),
                 stems,
+                analysis,
+                origin: Origin::load(&out_dir),
             })
         });
         match result.and_then(|r| r) {
@@ -583,6 +753,9 @@ mod tests {
             cookies_from_browser: None,
             paths,
             demo: false,
+            range: None,
+            title: None,
+            chain: None,
         };
         let cancel = AtomicBool::new(false);
         let out = run_real(&req, &cancel, &|ev| {

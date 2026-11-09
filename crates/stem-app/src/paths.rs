@@ -79,9 +79,73 @@ pub fn open_in_file_manager(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Total size of the files under `dir` (0 if it doesn't exist). Symlinks are not followed.
+pub fn dir_size(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Delete everything inside `dir` (keeping `dir` itself). Returns the bytes freed. Files that
+/// can't be removed (e.g. still open) are skipped; the error is returned only if nothing could
+/// be removed at all.
+pub fn clear_dir(dir: &Path) -> std::io::Result<u64> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Ok(0);
+    };
+    let mut freed = 0;
+    let mut first_err = None;
+    let mut removed_any = false;
+    for e in rd.flatten() {
+        let p = e.path();
+        let (size, res) = match e.file_type() {
+            Ok(t) if t.is_dir() => (dir_size(&p), std::fs::remove_dir_all(&p)),
+            _ => (
+                e.metadata().map_or(0, |m| m.len()),
+                std::fs::remove_file(&p),
+            ),
+        };
+        match res {
+            Ok(()) => {
+                freed += size;
+                removed_any = true;
+            }
+            Err(err) => {
+                first_err.get_or_insert(err);
+            }
+        }
+    }
+    match first_err {
+        Some(e) if !removed_any => Err(e),
+        _ => Ok(freed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measures_and_clears_a_folder() {
+        let dir = std::env::temp_dir().join(format!("stem-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.bin"), [0u8; 100]).unwrap();
+        std::fs::write(dir.join("sub/b.bin"), [0u8; 50]).unwrap();
+        assert_eq!(dir_size(&dir), 150);
+        assert_eq!(clear_dir(&dir).unwrap(), 150);
+        assert!(dir.is_dir());
+        assert_eq!(dir_size(&dir), 0);
+        assert_eq!(clear_dir(&dir.join("missing")).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sanitizes() {

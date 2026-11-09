@@ -2,7 +2,31 @@
 //!
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
-//! Scenes: home, drop, progress, results, models, library, settings, error.
+//! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
+//! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat),
+//! transform (Transform panel with a rendered preview), kit (drum-kit sheet),
+//! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
+//! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`,
+//! `STEM_SHOT_IDLE=1` (stage the scene but never capture: for idle-CPU checks).
+//! Polish scenes: midi-play (fake audition playhead on the roll), transform-render (a render
+//! in flight), exported (chop view just after an export: shimmer and micro-burst), playing
+//! (results with a staged playhead: the BPM chip pulses on the beat).
+//! Section scenes: section (the pre-split picker), section-loading (fetch/decode before it),
+//! section-results (results of a section split, with "Re-split selection"), section-settings
+//! (the naming template with tokens), section-home (home with "Pick a section" on).
+//! More scenes: midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set `STEM_MIDI_MODEL=nmp.onnx`
+//! and `ORT_DYLIB_PATH` to run the real model instead of the demo stand-in).
+//! Presets and chains: presets (start screen with a chain preset picked), chains (preset cards
+//! on the Models page), preset-editor (editing a chain with an ensemble step), chain-progress
+//! (step 2 of a chain running), stem-cache (Settings with the stem cache rows; use a tall
+//! `STEM_SHOT_SIZE` to reach Storage).
+//! Drum parts and vocal clean-up: drums (results with the six drum parts under Drums; use a
+//! tall `STEM_SHOT_SIZE`), drums-running (a drum split in flight on the Drums card),
+//! drums-menu (the Split menu open), vocals-clean (Dry + Reverb under Vocals), drums-models
+//! (the personal-use model group with NC badges; tall size), drums-presets (the new built-in
+//! chains on the Models page).
+//! Polish 4: welcome (the first-run welcome sheet), shortcuts (the `?` overlay over the
+//! results), library-hover (pair with `STEM_SHOT_POINTER` on a library card).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,14 +47,28 @@ pub struct Shot {
     requested: bool,
     /// Seconds to wait before capturing.
     delay: f64,
+    /// Polish variants staged on top of a base scene: "midi-play", "transform-render",
+    /// "exported" (empty for plain scenes).
+    variant: String,
+    fired: bool,
 }
 
 impl Shot {
     pub fn from_env() -> Option<Self> {
         let path = std::env::var_os("STEM_SHOT")?;
+        let scene = std::env::var("STEM_SCENE").unwrap_or_else(|_| "home".into());
+        let (scene, variant) = match scene.as_str() {
+            "midi-play" => ("midi".to_owned(), scene),
+            "transform-render" => ("transform".to_owned(), scene),
+            "exported" => ("chop".to_owned(), scene),
+            "playing" => ("results".to_owned(), scene),
+            _ => (scene, String::new()),
+        };
         Some(Self {
             path: PathBuf::from(path),
-            scene: std::env::var("STEM_SCENE").unwrap_or_else(|_| "home".into()),
+            scene,
+            variant,
+            fired: false,
             force_drop: false,
             requested: false,
             delay: std::env::var("STEM_SHOT_DELAY")
@@ -41,6 +79,22 @@ impl Shot {
     }
 
     pub fn setup(&mut self, app: &mut StemApp, _ctx: &egui::Context) {
+        if std::env::var_os("STEM_REDUCE_MOTION").is_some() {
+            app.settings.reduce_motion = true;
+        }
+        // Only the welcome scene shows the first-run sheet.
+        app.settings.welcomed = self.scene != "welcome";
+        let scene_alias = match self.scene.as_str() {
+            "shortcuts" => {
+                _ctx.data_mut(|d| d.insert_temp(egui::Id::unique("shortcuts-open"), true));
+                Some("results")
+            }
+            "library-hover" => Some("library"),
+            _ => None,
+        };
+        if let Some(a) = scene_alias {
+            self.scene = a.to_owned();
+        }
         let ago = |h: u64| now_unix().saturating_sub(h * 3600);
         app.settings.history = vec![
             HistoryEntry {
@@ -56,6 +110,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Midnight Drive"),
                 when: ago(0),
                 duration_secs: 32.0,
+                bpm: Some(90.0),
+                key: Some("C major".into()),
             },
             HistoryEntry {
                 title: "Soul Sample Flip 1972".into(),
@@ -72,6 +128,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Soul Sample Flip 1972"),
                 when: ago(5),
                 duration_secs: 214.0,
+                bpm: Some(96.0),
+                key: Some("Eb major".into()),
             },
             HistoryEntry {
                 title: "voice memo 03".into(),
@@ -81,6 +139,8 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/voice memo 03"),
                 when: ago(30),
                 duration_secs: 61.0,
+                bpm: None,
+                key: None,
             },
             HistoryEntry {
                 title: "Interview clip - x.com".into(),
@@ -90,10 +150,21 @@ impl Shot {
                 out_dir: std::env::temp_dir().join("stem-splitter-demo/Interview clip"),
                 when: ago(80),
                 duration_secs: 95.0,
+                bpm: None,
+                key: None,
             },
         ];
         match self.scene.as_str() {
             "drop" => self.force_drop = true,
+            "section" | "section-loading" => section_scene(app, &self.scene),
+            "section-home" => {
+                app.settings.pick_section = true;
+                app.url_input = "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into();
+            }
+            "section-settings" => {
+                app.page = Page::Settings;
+                app.settings.export_template = "{title} - {stem} - {bpm}bpm {key}".into();
+            }
             "progress" => {
                 app.url_input = "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into();
                 let model = app.backend.model(None).cloned();
@@ -110,9 +181,60 @@ impl Shot {
                     cancel: Arc::new(AtomicBool::new(false)),
                     shown: Stage::Separating.overall(0.62),
                     reopening: false,
+                    preparing: false,
                 });
             }
-            "results" => {
+            "queue" => {
+                use crate::queue::ItemStatus;
+                let model = app.backend.model(None).cloned();
+                let src = |u: &str| InputSource::Url(u.to_owned());
+                let q = &mut app.queue;
+                let done = q.push(src("https://www.youtube.com/watch?v=a1"), false);
+                let run = q.push(src("https://soundcloud.com/someone/soul-flip"), false);
+                let p1 = q.push(src("https://www.youtube.com/watch?v=c3"), false);
+                q.push(src("https://x.com/someone/status/1"), false);
+                let pl = q.push(src("https://www.youtube.com/playlist?list=PLdemo"), true);
+                let bad = q.push(src("https://www.youtube.com/watch?v=gone"), false);
+                let entry = app.settings.history[0].clone();
+                let titles = [
+                    (done, "Midnight Drive (demo beat)"),
+                    (run, "Soul Sample Flip 1972"),
+                    (p1, "Dusty Breaks Vol. 2"),
+                    (pl, "Playlist: crate digging"),
+                ];
+                for (id, t) in titles {
+                    if let Some(i) = q.get_mut(id) {
+                        i.title = t.into();
+                    }
+                }
+                if let Some(i) = q.get_mut(done) {
+                    i.status = ItemStatus::Done(Box::new(entry));
+                }
+                if let Some(i) = q.get_mut(run) {
+                    i.status = ItemStatus::Running { job_id: 999 };
+                }
+                if let Some(i) = q.get_mut(bad) {
+                    i.status = ItemStatus::Failed("yt-dlp: Video unavailable".into());
+                }
+                app.job = Some(RunningJob {
+                    id: 999,
+                    source: src("https://soundcloud.com/someone/soul-flip"),
+                    title: "Soul Sample Flip 1972".into(),
+                    model_name: model.as_ref().map_or("", |m| m.name).into(),
+                    stems: model.map(|m| m.stems).unwrap_or_default(),
+                    stage: Stage::Separating,
+                    detail: "HTDemucs 4-stem".into(),
+                    frac: Some(0.37),
+                    started: -21.0,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    shown: Stage::Separating.overall(0.37),
+                    reopening: false,
+                    preparing: false,
+                });
+            }
+            "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
+            | "transform" | "kit" | "midi" | "midi-quantize" | "section-results" | "drums"
+            | "drums-running" | "drums-menu" | "vocals-clean" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -131,11 +253,24 @@ impl Shot {
                             env,
                         }
                     })
-                    .collect();
+                    .collect::<Vec<StemOut>>();
+                let refs: Vec<_> = stems.iter().map(|s| (s.kind, &s.audio)).collect();
+                let analysis = crate::analysis::analyze_stems(&refs);
                 app.open_session(JobOutput {
                     title: crate::demo::DEMO_TITLE.into(),
                     out_dir: std::env::temp_dir().join("stem-splitter-demo/Midnight Drive"),
                     stems,
+                    analysis,
+                    origin: if self.scene == "section-results" {
+                        crate::section::Origin {
+                            source: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into(),
+                            input: None,
+                            range: Some(crate::section::SplitRange::new(32.0, 53.33)),
+                            model_name: "HTDemucs 4-stem".into(),
+                        }
+                    } else {
+                        Default::default()
+                    },
                 });
                 if let Some(s) = &mut app.session {
                     s.selection = Some((10.67, 13.33));
@@ -147,14 +282,104 @@ impl Shot {
                     s.tracks[1].level = 0.9;
                     s.tracks[2].level = 0.5;
                 }
+                if self.scene == "results-zoom"
+                    && let Some(s) = &mut app.session
+                {
+                    s.timeline.zoom_around(12.0, 3.5);
+                    s.selection = s.analysis.as_ref().and_then(|a| a.grid.as_ref()).map(|g| {
+                        (
+                            g.snap(10.4, stem_audio::analysis::GridDivision::Bar),
+                            g.snap(13.1, stem_audio::analysis::GridDivision::Beat),
+                        )
+                    });
+                }
                 app.player.seek(12.1);
-                app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                if let Some(s) = &mut app.session
+                    && self.scene.starts_with("chop")
+                {
+                    use crate::chop::{ChopMode, ChopSettings, GridChoice};
+                    s.chop.open = true;
+                    s.chop.settings = if self.scene == "chop" {
+                        ChopSettings {
+                            stem: Some(StemKind::Drums),
+                            // Two bars from the selection.
+                            region: s.selection.map(|(a, b)| (a, a + 2.0 * (b - a))),
+                            ..Default::default()
+                        }
+                    } else {
+                        ChopSettings {
+                            stem: Some(StemKind::Other),
+                            mode: ChopMode::Grid,
+                            grid: GridChoice::HalfBeat,
+                            region: s.selection.map(|(a, _)| (a, a + 8.0 * 0.6667)),
+                            choke: true,
+                            ..Default::default()
+                        }
+                    };
+                    s.chop.retarget();
+                }
+                if self.scene.starts_with("midi") {
+                    if let Some(s) = &mut app.session {
+                        s.selection = None;
+                    }
+                    if self.scene == "midi-quantize" {
+                        app.midi_prefs.quantize =
+                            Some(stem_models::transcribe::QuantizeGrid::Sixteenth);
+                    }
+                    crate::views::midi::open_sheet(app, 2, false, _ctx);
+                }
+                if self.scene.starts_with("drums") || self.scene == "vocals-clean" {
+                    drums_scene(app, &self.scene, _ctx);
+                } else if self.scene == "transform" || self.scene == "kit" {
+                    dsp_scene(app, &self.scene);
+                } else if self.scene == "export" {
+                    app.settings.export_without = true;
+                    app.settings.export_format = crate::settings::ExportFormat::Flac24;
+                    app.export_all_stems();
+                } else {
+                    if !self.scene.starts_with("chop") && !self.scene.starts_with("midi") {
+                        app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                    }
+                }
+                if self.scene == "celebrate" {
+                    app.fx.celebrate(
+                        kinds.iter().map(|k| crate::theme::stem_color(*k)).collect(),
+                        "4 STEMS READY",
+                    );
+                }
+            }
+            "welcome" => {
+                app.settings.history.clear();
+            }
+            "empty" => {
+                app.page = Page::Library;
+                app.settings.history.clear();
             }
             "models" => {
                 app.page = Page::Models;
                 if let Some(m) = app.backend.models.get(1) {
-                    app.model_downloads.insert(m.id.to_owned(), Some(0.46));
+                    let total = m.size_bytes.max(1);
+                    app.model_downloads.insert(
+                        m.id.to_owned(),
+                        crate::app::ModelDl {
+                            status: stem_models::DownloadStatus {
+                                done: total * 46 / 100,
+                                total: Some(total),
+                                bytes_per_sec: 9.4e6,
+                                resumed_from: 0,
+                            },
+                            cancel: Arc::new(AtomicBool::new(false)),
+                        },
+                    );
                 }
+            }
+            "drums-models" => app.page = Page::Models,
+            "drums-presets" => {
+                app.page = Page::Models;
+                app.settings.preset_id = Some("builtin:drum-kit-pieces".into());
+            }
+            "presets" | "chains" | "preset-editor" | "chain-progress" | "stem-cache" => {
+                preset_scene(app, &self.scene);
             }
             "library" => app.page = Page::Library,
             "settings" => app.page = Page::Settings,
@@ -171,9 +396,97 @@ impl Shot {
         }
     }
 
-    pub fn frame(&mut self, _app: &mut StemApp, ctx: &egui::Context) {
+    /// Screenshots ignore the real (virtual-display) pointer, so nothing looks hovered by
+    /// accident. `STEM_SHOT_POINTER=x,y` parks a pointer there instead, for hover shots.
+    pub fn filter_input(&self, raw: &mut egui::RawInput) {
+        // Idle checks leave input alone: the synthetic pointer events would wake every frame.
+        if std::env::var_os("STEM_SHOT_IDLE").is_some() {
+            return;
+        }
+        raw.events.retain(|e| {
+            !matches!(
+                e,
+                egui::Event::PointerMoved(_)
+                    | egui::Event::PointerButton { .. }
+                    | egui::Event::PointerGone
+            )
+        });
+        if let Some((x, y)) = std::env::var("STEM_SHOT_POINTER").ok().and_then(|s| {
+            let (x, y) = s.split_once(',')?;
+            Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+        }) {
+            raw.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+        } else {
+            raw.events.push(egui::Event::PointerGone);
+        }
+    }
+
+    pub fn frame(&mut self, app: &mut StemApp, ctx: &egui::Context) {
+        // STEM_SHOT_IDLE=1: stage the scene, then leave the app alone (no capture, no forced
+        // repaints, silent meters), to measure idle CPU on that screen.
+        if std::env::var_os("STEM_SHOT_IDLE").is_some() {
+            if let Some(s) = &mut app.session {
+                for t in &mut s.tracks {
+                    t.level = 0.0;
+                }
+            }
+            return;
+        }
         ctx.request_repaint();
         let t = ctx.input(|i| i.time);
+        // Chop scenes: finger-drum a few pads just before the capture so they flash.
+        if self.scene.starts_with("chop")
+            && let Some(s) = &mut app.session
+        {
+            // Relative to now, so the flash looks the same whenever the capture lands.
+            let at = t;
+            let hits: &[(usize, f64, f32)] = if self.scene == "chop" {
+                &[
+                    (0, 0.5, 1.0),
+                    (5, 0.12, 0.8),
+                    (2, 0.04, 1.0),
+                    (10, 0.3, 0.9),
+                ]
+            } else {
+                &[(3, 0.03, 1.0), (8, 0.25, 0.7)]
+            };
+            for &(i, ago, v) in hits {
+                if let Some(h) = s.chop.hits.get_mut(i) {
+                    h.at = at - ago;
+                    h.velocity = v;
+                }
+            }
+            s.chop.held = if self.scene == "chop" {
+                vec![2]
+            } else {
+                vec![3]
+            };
+            s.chop.hover = Some(if self.scene == "chop" { 7 } else { 5 });
+        }
+        // midi-play: a fake audition playhead sweeping the roll (trail, afterglow, key lights).
+        if self.variant == "midi-play" {
+            let at = (6.1 + (t - self.delay)).max(0.0);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/midi-playhead"), at));
+        }
+        // playing: the transport "plays" from 12.1 s (BPM chip beat pulse).
+        if self.variant == "playing" {
+            let at = 12.1 + (t - self.delay) + 0.07;
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/playing"), at));
+        }
+        // transform-render: a render in flight, creeping towards done.
+        if self.variant == "transform-render" {
+            let f = (0.35 + 0.05 * (t - self.delay)).clamp(0.05, 0.95) as f32;
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/tf-render"), f));
+        }
+        // exported: a chop export just finished (Export buttons shimmer, micro-burst).
+        if self.variant == "exported" && !self.fired && t > self.delay - 0.32 {
+            self.fired = true;
+            crate::widgets::buttons::export_succeeded();
+            app.fx.sparkle_at(
+                "chop-export",
+                (0..8).map(crate::widgets::pads::slice_color).collect(),
+            );
+        }
         if !self.requested && t > self.delay {
             self.requested = true;
             let path = self.path.clone();
@@ -193,6 +506,223 @@ impl Shot {
                 }
                 ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
             });
+        }
+    }
+}
+
+/// The section picker on the demo arrangement (8 bars into the second verse, playing), or
+/// the pre-split loading step before it.
+fn section_scene(app: &mut StemApp, scene: &str) {
+    use crate::section::{Prepared, SectionPick, SplitRange};
+    let source = InputSource::Url("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into());
+    if scene == "section-loading" {
+        let model = app.backend.model(None).cloned();
+        app.job = Some(RunningJob {
+            id: 999,
+            source,
+            title: crate::demo::DEMO_TITLE.into(),
+            model_name: model.as_ref().map_or("", |m| m.name).into(),
+            stems: model.map(|m| m.stems).unwrap_or_default(),
+            stage: Stage::Decoding,
+            detail: "Finding the beat".into(),
+            frac: None,
+            started: -9.0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            shown: 0.84,
+            reopening: false,
+            preparing: true,
+        });
+        return;
+    }
+    let mix = crate::section::demo_mix();
+    let env = Envelope::from_buffer(&mix, BUCKETS);
+    let analysis = crate::analysis::analyze_stems(&[(StemKind::Other, &mix)]);
+    let prep = Prepared {
+        source,
+        title: crate::demo::DEMO_TITLE.into(),
+        input: std::env::temp_dir().join("stem-splitter-demo/input.wav"),
+        duration: mix.duration_secs(),
+        audio: Arc::new(vec![mix]),
+        env,
+        analysis,
+    };
+    app.player.load(prep.audio.clone());
+    let mut pick = SectionPick::new(prep, Some(SplitRange::new(32.0, 40.0)));
+    let start = pick.snap_time(32.0, false);
+    pick.sel.0 = start;
+    pick.set_bars(8);
+    app.player.seek(pick.sel.0 + 6.2);
+    app.section = Some(pick);
+}
+
+/// Transform panel with a finished preview render, or the kit sheet with extracted hits.
+/// Work runs inline so the capture never races a worker thread.
+fn dsp_scene(app: &mut StemApp, scene: &str) {
+    use std::sync::atomic::AtomicU32;
+    crate::fx::poll(app);
+    let Some(drums) = app
+        .session
+        .as_ref()
+        .and_then(|s| s.tracks.iter().position(|t| t.kind == StemKind::Drums))
+    else {
+        return;
+    };
+    let ctx = app.dsp.ctx();
+    if scene == "kit" {
+        let audio = app.session.as_ref().map(|s| s.audio[drums].clone());
+        if let Some(audio) = audio {
+            crate::fx::open_kit_blocking(app, drums, &audio);
+        }
+        return;
+    }
+    if let Some(s) = &mut app.session {
+        s.selection = Some((10.67, 13.33));
+        s.sel_track = 0;
+    }
+    app.dsp.ui.stem = 0;
+    app.dsp.ui.bpm = 95.0;
+    app.dsp.ui.semis = 3;
+    app.dsp.scroll_to_panel = true;
+    if let Ok(key) = crate::fx::current_key(app)
+        && let Some(s) = &app.session
+    {
+        let t0 = std::time::Instant::now();
+        let never = AtomicBool::new(false);
+        if let Ok(audio) = crate::fx::render_key(&s.audio, &key, &AtomicU32::new(0), &never, &ctx) {
+            app.dsp.last = Some(crate::fx::Rendered {
+                key,
+                audio: Arc::new(audio),
+                secs: t0.elapsed().as_secs_f64(),
+            });
+        }
+    }
+}
+
+/// Drum-part / clean-up scenes on top of the results scene (Vocals, Drums, Bass, Other).
+fn drums_scene(app: &mut StemApp, scene: &str, ctx: &egui::Context) {
+    let sub = |kinds: &[StemKind]| -> Vec<StemOut> {
+        kinds
+            .iter()
+            .map(|k| {
+                let audio = crate::demo::stem(*k);
+                let env = Envelope::from_buffer(&audio, BUCKETS);
+                StemOut {
+                    kind: *k,
+                    audio,
+                    path: PathBuf::from(format!("{}.wav", k.label().to_lowercase())),
+                    env,
+                }
+            })
+            .collect()
+    };
+    if let Some(s) = &mut app.session {
+        s.selection = None;
+        s.tracks[3].mute = false;
+    }
+    match scene {
+        "drums" => {
+            app.add_sub_stems(1, sub(&StemKind::DRUM_PARTS));
+            if let Some(s) = &mut app.session {
+                for (k, lvl) in [0.85, 0.6, 0.2, 0.7, 0.1, 0.4].into_iter().enumerate() {
+                    s.tracks[4 + k].level = lvl;
+                }
+            }
+            app.toasts.success("6 drum parts ready", "DrumSep MDX23C");
+        }
+        "vocals-clean" => {
+            app.add_sub_stems(0, sub(&[StemKind::Dry, StemKind::Reverb]));
+            if let Some(s) = &mut app.session {
+                s.tracks[4].level = 0.75;
+                s.tracks[5].level = 0.3;
+            }
+            app.toasts.success("2 clean-up stems ready", "Reverb HQ");
+        }
+        _ => {
+            if scene == "drums-running" {
+                let out_dir = app.session.as_ref().map(|s| s.out_dir.clone());
+                app.refine = Some(crate::refine::RefineJob {
+                    id: 77,
+                    op: crate::pipeline::refine::RefineOp::DrumParts,
+                    track: 1,
+                    model_name: "DrumSep MDX23C".into(),
+                    model_id: "drumsep-mdx23c",
+                    detail: "CPU · segment 7/12".into(),
+                    frac: Some(0.58),
+                    shown: 0.58,
+                    started: -41.0,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    out_dir: out_dir.unwrap_or_default(),
+                });
+            } else {
+                // The anchor is corrected by the card on the first frame.
+                crate::views::refine::open_menu(ctx, 1, egui::Rect::NOTHING);
+            }
+        }
+    }
+}
+
+/// Presets and chains scenes: one user preset next to the built-ins, a chain picked.
+fn preset_scene(app: &mut StemApp, scene: &str) {
+    use crate::pipeline::chain::{Chain, Step, StepInput};
+    use crate::settings::Preset;
+    use stem_audio::ensemble::EnsembleMode;
+    let flip = Preset {
+        id: String::new(),
+        name: "Flip kit (6-stem)".into(),
+        description: "Vocal ensemble, then guitar and piano out of the beat for chops.".into(),
+        chain: Chain {
+            steps: vec![
+                Step {
+                    input: StepInput::Mix,
+                    models: vec!["mel-roformer-kim".into(), "mdx-kim-vocal-2".into()],
+                    ensemble: EnsembleMode::MaxSpec,
+                },
+                Step::new(StepInput::Stem(StemKind::Instrumental), "htdemucs-6s"),
+            ],
+        },
+    };
+    let id = app.settings.save_preset(flip);
+    app.settings.preset_id = Some("builtin:beatmaker-4".into());
+    match scene {
+        "presets" => {}
+        "chains" => app.page = Page::Models,
+        "preset-editor" => {
+            app.page = Page::Models;
+            app.settings.preset_id = Some(id.clone());
+            if let Some(preset) = app.settings.find_preset(&id) {
+                app.preset_editor = Some(crate::views::presets::PresetEditor {
+                    preset,
+                    existing: true,
+                });
+            }
+        }
+        "chain-progress" => {
+            let spec = app
+                .settings
+                .find_preset("builtin:beatmaker-4")
+                .and_then(|p| app.chain_spec(&p).ok());
+            app.job = Some(RunningJob {
+                id: 999,
+                source: InputSource::Url("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()),
+                title: "Midnight Drive (demo beat)".into(),
+                model_name: "Beatmaker 4-stem".into(),
+                stems: spec
+                    .and_then(|s| s.plan().ok())
+                    .map(|p| p.kinds())
+                    .unwrap_or_default(),
+                stage: Stage::Separating,
+                detail: "Step 2/2 · HTDemucs on instrumental".into(),
+                frac: Some(0.71),
+                started: -63.0,
+                cancel: Arc::new(AtomicBool::new(false)),
+                shown: Stage::Separating.overall(0.71),
+                reopening: false,
+                preparing: false,
+            });
+        }
+        _ => {
+            app.page = Page::Settings;
+            app.stem_cache_size = Some(3_420_000_000);
         }
     }
 }

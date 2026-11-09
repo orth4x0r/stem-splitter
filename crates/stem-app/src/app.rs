@@ -8,17 +8,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::{Receiver, unbounded};
 use eframe::egui;
 use stem_audio::AudioBuffer;
-use stem_models::StemKind;
+use stem_models::{DownloadStatus, StemKind};
 
 use crate::backend::Backend;
-use crate::paths::{AppPaths, sanitize_file_name};
+use crate::paths::AppPaths;
 use crate::pipeline::{
     self, AppEvent, InputSource, JobEvent, JobOutput, JobRequest, Notifier, Stage,
 };
 use crate::player::Player;
-use crate::settings::{HistoryEntry, Settings, now_unix};
+use crate::queue::{ItemStatus, Queue};
+use crate::settings::{HistoryEntry, Preset, Settings, now_unix};
 use crate::shot::Shot;
 use crate::waveform::Envelope;
+use crate::widgets::drag_handle::PillAction;
 use crate::widgets::toast::Toasts;
 use crate::{theme, views};
 
@@ -45,11 +47,19 @@ pub struct RunningJob {
     pub shown: f32,
     /// From history: only decoding, no separation.
     pub reopening: bool,
+    /// The pre-split step: fetch + decode only, then the section picker opens.
+    pub preparing: bool,
 }
 
 impl RunningJob {
     pub fn overall(&self) -> f32 {
-        self.stage.overall(self.frac.unwrap_or(0.0))
+        let o = self.stage.overall(self.frac.unwrap_or(0.0));
+        if self.preparing {
+            // Fetch + decode fill the whole bar.
+            (o / Stage::PreparingModel.overall(0.0)).min(1.0)
+        } else {
+            o
+        }
     }
 }
 
@@ -62,6 +72,8 @@ pub struct Track {
     pub solo: bool,
     /// Smoothed meter value.
     pub level: f32,
+    /// The stem this one was split from (drum parts under Drums, dry vocals under Vocals).
+    pub parent: Option<StemKind>,
 }
 
 pub struct Session {
@@ -73,6 +85,31 @@ pub struct Session {
     pub selection: Option<(f64, f64)>,
     /// Lane the selection was made on (default export target).
     pub sel_track: usize,
+    /// Tempo, key and beat grid.
+    pub analysis: Option<crate::analysis::TrackAnalysis>,
+    /// Visible window of the waveforms (zoom / scroll).
+    pub timeline: crate::timeline::Timeline,
+    /// Chop mode (slices, pads), saved per session.
+    pub chop: crate::chop::ChopState,
+    /// Source, input file and section the stems came from.
+    pub origin: crate::section::Origin,
+}
+
+impl Session {
+    /// Values for the export naming template.
+    pub fn names(&self) -> crate::export::NameCtx {
+        crate::export::NameCtx::new(
+            &self.title,
+            self.analysis.as_ref(),
+            self.origin.range,
+            &self.origin.model_name,
+        )
+    }
+
+    /// The title as used in file names: " (1m02-1m34)" added for a section split.
+    pub fn file_title(&self) -> String {
+        crate::section::dir_name(&self.title, self.origin.range)
+    }
 }
 
 impl Session {
@@ -90,6 +127,29 @@ impl Session {
             0.0
         }
     }
+}
+
+/// A model download in progress (the Models page shows speed / ETA and a cancel button).
+pub struct ModelDl {
+    pub status: DownloadStatus,
+    pub cancel: Arc<AtomicBool>,
+}
+
+/// State of the "Export stems" dialog while it is open.
+pub struct ExportDialog {
+    /// One flag per session track.
+    pub selected: Vec<bool>,
+    pub dest: PathBuf,
+}
+
+/// The "Install ffmpeg" button in Settings.
+#[derive(Default)]
+pub struct FfmpegState {
+    pub busy: bool,
+    pub frac: Option<f32>,
+    pub msg: String,
+    /// Cached lookup: `None` = not checked yet.
+    pub found: Option<Option<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -111,12 +171,71 @@ pub struct StemApp {
     pub toasts: Toasts,
     pub notifier: Notifier,
     rx: Receiver<AppEvent>,
-    pub model_downloads: HashMap<String, Option<f32>>,
+    pub model_downloads: HashMap<String, ModelDl>,
     pub ytdlp_busy: bool,
-    next_job_id: u64,
+    pub(crate) next_job_id: u64,
     pub shot: Option<Shot>,
     /// Drag-and-drop hover strength for the overlay, set each frame.
     pub drop_hover: bool,
+    /// Batch queue of links / files split one after another.
+    pub queue: Queue,
+    pub export_dialog: Option<ExportDialog>,
+    pub export_busy: bool,
+    /// Files to drag out of the window at the end of this frame (Windows OLE drag).
+    pending_drag: Option<Vec<PathBuf>>,
+    /// The OS drag loop swallowed the mouse-up: tell egui the button was released.
+    release_pointer: bool,
+    /// Files we dragged out last, and when: if the user lets go over our own window, winit
+    /// reports them as dropped files, which must not start a split.
+    dragged_out: (Vec<PathBuf>, f64),
+    pub ffmpeg: FfmpegState,
+    /// Size of the downloads cache in bytes; `None` = not measured yet.
+    pub downloads_size: Option<u64>,
+    /// Size of the stem cache in bytes; `None` = not measured yet.
+    pub stem_cache_size: Option<u64>,
+    /// The open preset editor.
+    pub preset_editor: Option<crate::views::presets::PresetEditor>,
+    /// The open "→ MIDI" sheet.
+    pub midi: Option<crate::midi::MidiSheet>,
+    pub midi_prefs: crate::midi::MidiPrefs,
+    /// Transform renders, kit extraction and their audition player.
+    pub dsp: crate::fx::Fx,
+    /// Ambient background, aurora and celebration state.
+    pub fx: crate::effects::Fx,
+    pub splash: crate::splash::Splash,
+    perf: Option<Perf>,
+    /// The open "pick a section" step (after fetch + decode, before separating).
+    pub section: Option<crate::section::SectionPick>,
+    /// "Split drums" / "Clean vocals" running on a stem of the open session.
+    pub refine: Option<crate::refine::RefineJob>,
+    /// Where the picker should start once the pre-split step finishes.
+    pending_preset: Option<crate::section::SplitRange>,
+}
+
+/// Frame-time statistics, printed when `STEM_PERF` is set.
+#[derive(Default)]
+struct Perf {
+    sum: f32,
+    max: f32,
+    n: u32,
+}
+
+impl Perf {
+    fn add(&mut self, cpu: Option<f32>) {
+        let Some(c) = cpu else { return };
+        self.sum += c;
+        self.max = self.max.max(c);
+        self.n += 1;
+        if self.n == 120 {
+            eprintln!(
+                "perf: cpu/frame avg {:.2} ms, max {:.2} ms over {} frames",
+                1000.0 * self.sum / self.n as f32,
+                1000.0 * self.max,
+                self.n
+            );
+            *self = Self::default();
+        }
+    }
 }
 
 impl StemApp {
@@ -147,7 +266,29 @@ impl StemApp {
             next_job_id: 1,
             shot: None,
             drop_hover: false,
+            queue: Queue::default(),
+            export_dialog: None,
+            export_busy: false,
+            pending_drag: None,
+            release_pointer: false,
+            dragged_out: (Vec::new(), 0.0),
+            ffmpeg: FfmpegState::default(),
+            downloads_size: None,
+            stem_cache_size: None,
+            preset_editor: None,
+            dsp: crate::fx::Fx::new(cc.egui_ctx.clone()),
+            fx: crate::effects::Fx::default(),
+            splash: crate::splash::Splash::new(false),
+            perf: std::env::var_os("STEM_PERF").map(|_| Perf::default()),
+            midi: None,
+            midi_prefs: Default::default(),
+            section: None,
+            refine: None,
+            pending_preset: None,
         };
+        theme::motion::set_reduced(app.settings.reduce_motion);
+        let intro = app.settings.intro && shot.as_ref().is_none_or(|s| s.scene == "splash");
+        app.splash = crate::splash::Splash::new(intro);
         if let Some(problem) = app.backend.problem.clone() {
             app.toasts.error("Backend not ready", problem);
         }
@@ -164,47 +305,112 @@ impl StemApp {
 
     // ---- actions -------------------------------------------------------------------------
 
+    /// Split `source` now, or queue it behind the running job.
     pub fn start_job(&mut self, source: InputSource, now: f64) {
-        if self.job.is_some() {
-            self.toasts.info(
-                "Already splitting",
-                "Wait for the current track or cancel it.",
-            );
+        if self.job.is_some() || self.section.is_some() || self.queue.has_work() {
+            self.enqueue(vec![source]);
             return;
         }
-        let Some(model) = self
-            .backend
-            .model(self.settings.model_id.as_deref())
-            .cloned()
-        else {
+        if self.settings.pick_section {
+            self.prepare(source, None, None, now);
+        } else {
+            self.launch(source, now, None);
+        }
+    }
+
+    /// Start the split pipeline for `source`; `queue_item` links it to a queue entry.
+    fn launch(&mut self, source: InputSource, now: f64, queue_item: Option<u64>) {
+        self.launch_with(source.clone(), source, None, None, now, queue_item);
+    }
+
+    /// Start the pipeline on `input` (a link, or a file already fetched) while showing
+    /// `source`; `title` overrides the guessed title, `range` splits only that section.
+    fn launch_with(
+        &mut self,
+        source: InputSource,
+        input: InputSource,
+        title: Option<String>,
+        range: Option<crate::section::SplitRange>,
+        now: f64,
+        queue_item: Option<u64>,
+    ) {
+        let Some((id, cancel, req)) = self.new_job(source, input, title, now, false) else {
+            return;
+        };
+        if let Some(item) = queue_item.and_then(|q| self.queue.get_mut(q)) {
+            item.status = ItemStatus::Running { job_id: id };
+        }
+        pipeline::spawn_job(JobRequest { range, ..req }, cancel, self.notifier.clone());
+    }
+
+    /// Set up a [`RunningJob`] and the request for it (`None` without any model).
+    fn new_job(
+        &mut self,
+        source: InputSource,
+        input: InputSource,
+        title: Option<String>,
+        now: f64,
+        preparing: bool,
+    ) -> Option<(u64, Arc<AtomicBool>, JobRequest)> {
+        let chain = match self.settings.active_preset() {
+            Some(preset) => match self.chain_spec(&preset) {
+                Ok(spec) => Some(spec),
+                Err(e) => {
+                    self.toasts.error(format!("Can't run “{}”", preset.name), e);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let model = match &chain {
+            Some(spec) => spec.models.first().cloned(),
+            None => self
+                .backend
+                .model(self.settings.model_id.as_deref())
+                .cloned(),
+        };
+        let Some(model) = model else {
             self.toasts
                 .error("No models available", "The model registry is empty.");
-            return;
+            return None;
         };
         self.player.unload();
         self.session = None;
+        self.section = None;
         self.failure = None;
         let id = self.next_job_id;
         self.next_job_id += 1;
         let cancel = Arc::new(AtomicBool::new(false));
+        let (model_name, stems) = match &chain {
+            Some(spec) => (
+                spec.name.clone(),
+                spec.plan().map(|p| p.kinds()).unwrap_or_default(),
+            ),
+            None => (model.name.to_owned(), model.stems.clone()),
+        };
         self.job = Some(RunningJob {
             id,
-            title: source.provisional_title(),
-            source: source.clone(),
-            model_name: model.name.to_owned(),
-            stems: model.stems.clone(),
-            stage: Stage::Fetching,
+            title: title.clone().unwrap_or_else(|| source.provisional_title()),
+            source,
+            model_name,
+            stems,
+            stage: if preparing || matches!(input, InputSource::Url(_)) {
+                Stage::Fetching
+            } else {
+                Stage::Decoding
+            },
             detail: "Starting".into(),
             frac: None,
             started: now,
             cancel: cancel.clone(),
             shown: 0.0,
             reopening: false,
+            preparing,
         });
         self.page = Page::Split;
         let req = JobRequest {
             id,
-            source,
+            source: input,
             model,
             device: self.settings.device,
             output_root: self.settings.output_dir.clone(),
@@ -212,35 +418,223 @@ impl StemApp {
             cookies_from_browser: self.settings.cookies_from_browser.clone(),
             paths: self.backend.paths.clone(),
             demo: self.demo(),
+            range: None,
+            title,
+            chain,
         };
-        pipeline::spawn_job(req, cancel, self.notifier.clone());
+        Some((id, cancel, req))
+    }
+
+    /// The pre-split step: fetch and decode `source`, then open the section picker on it
+    /// (starting on `preset` when given).
+    pub fn prepare(
+        &mut self,
+        source: InputSource,
+        input: Option<(PathBuf, String)>,
+        preset: Option<crate::section::SplitRange>,
+        now: f64,
+    ) {
+        let (file, title) = match input {
+            Some((p, t)) => (InputSource::File(p), Some(t)),
+            None => (source.clone(), None),
+        };
+        if let Some((_, cancel, req)) = self.new_job(source, file, title, now, true) {
+            self.pending_preset = preset;
+            crate::section::spawn_prepare(req, cancel, self.notifier.clone());
+        }
+    }
+
+    /// Split what the picker has selected (the whole track when it covers all of it).
+    pub fn split_section(&mut self, now: f64) {
+        let Some(pick) = self.section.take() else {
+            return;
+        };
+        let range = pick.range();
+        let p = pick.prep;
+        self.launch_with(
+            p.source,
+            InputSource::File(p.input),
+            Some(p.title),
+            range,
+            now,
+            None,
+        );
+    }
+
+    /// Leave the picker without splitting.
+    pub fn close_section(&mut self) {
+        self.section = None;
+        self.player.unload();
+    }
+
+    /// Results page: split the selected part of the original input again.
+    pub fn resplit_selection(&mut self, now: f64) {
+        let Some(s) = &self.session else { return };
+        let Some(sel) = s.selection else {
+            self.toasts.info(
+                "Select a region first",
+                "Drag across a waveform to pick the part to split again.",
+            );
+            return;
+        };
+        let demo = self.demo();
+        let Some(input) = s.origin.input.clone().filter(|p| p.is_file() || demo) else {
+            self.toasts.error(
+                "The original audio is gone",
+                "Re-split needs the downloaded or source file; split the link again instead.",
+            );
+            return;
+        };
+        let range = s.origin.absolute(sel);
+        let source = if s.origin.source.is_empty() {
+            InputSource::File(input.clone())
+        } else if s.origin.source.contains("://") {
+            InputSource::Url(s.origin.source.clone())
+        } else {
+            InputSource::File(PathBuf::from(&s.origin.source))
+        };
+        let title = s.title.clone();
+        self.launch_with(
+            source,
+            InputSource::File(input),
+            Some(title),
+            Some(range),
+            now,
+            None,
+        );
+    }
+
+    /// Resolve a preset's models; fails if one is unknown or not available yet.
+    pub fn chain_spec(&self, preset: &Preset) -> Result<pipeline::chain::ChainSpec, String> {
+        let mut models = Vec::new();
+        for id in preset.chain.model_ids() {
+            let m = self
+                .backend
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .ok_or_else(|| format!("model “{id}” isn't in this version"))?;
+            if !self.backend.is_available(m) {
+                return Err(format!(
+                    "{} isn't hosted yet; export it into the models folder first",
+                    m.name
+                ));
+            }
+            models.push(m.clone());
+        }
+        let spec = pipeline::chain::ChainSpec {
+            name: preset.name.clone(),
+            chain: preset.chain.clone(),
+            models,
+            use_cache: self.settings.stem_cache,
+            cache_limit: self.settings.stem_cache_limit(),
+        };
+        spec.plan()?;
+        Ok(spec)
+    }
+
+    /// Use a preset for the next splits (`None` = back to the single model).
+    pub fn pick_preset(&mut self, id: Option<String>) {
+        self.settings.preset_id = id;
+    }
+
+    /// Use a single model for the next splits.
+    pub fn pick_model(&mut self, id: &str) {
+        self.settings.model_id = Some(id.to_owned());
+        self.settings.preset_id = None;
     }
 
     pub fn start_from_input(&mut self, now: f64) {
-        let text = self.url_input.trim().trim_matches('"').to_owned();
+        let text = self.url_input.trim().to_owned();
         if text.is_empty() {
             self.toasts.info(
                 "Paste a link first",
-                "YouTube, X, SoundCloud or a direct audio link.",
+                "YouTube, X, SoundCloud or a direct audio link. Several links queue up.",
             );
             return;
         }
-        let path = PathBuf::from(&text);
-        let source = if path.is_file() {
-            InputSource::File(path)
-        } else if text.starts_with("http://") || text.starts_with("https://") || text.contains('.')
-        {
-            let url = if text.contains("://") {
-                text
-            } else {
-                format!("https://{text}")
-            };
-            InputSource::Url(url)
-        } else {
+        let (sources, bad) = crate::queue::parse_input(&text);
+        if sources.is_empty() {
             self.toasts.error("That doesn't look like a link", text);
             return;
-        };
-        self.start_job(source, now);
+        }
+        if !bad.is_empty() {
+            self.toasts
+                .info("Skipped what isn't a link", bad.join("  "));
+        }
+        self.url_input.clear();
+        let single = sources.len() == 1
+            && !matches!(&sources[0], InputSource::Url(u) if stem_fetch::is_playlist_url(u));
+        if single {
+            let src = sources.into_iter().next().unwrap_or(InputSource::Url(text));
+            self.start_job(src, now);
+        } else {
+            self.enqueue(sources);
+        }
+    }
+
+    /// Add sources to the batch queue (playlist URLs get listed first).
+    pub fn enqueue(&mut self, sources: Vec<InputSource>) {
+        let n = sources.len();
+        for src in sources {
+            let playlist = matches!(&src, InputSource::Url(u) if stem_fetch::is_playlist_url(u));
+            let url = src.display();
+            let id = self.queue.push(src, playlist);
+            if playlist {
+                pipeline::spawn_playlist_expand(
+                    id,
+                    url,
+                    self.backend.paths.clone(),
+                    self.settings.cookies_from_browser.clone(),
+                    self.demo(),
+                    self.notifier.clone(),
+                );
+            }
+        }
+        self.toasts.info(
+            if n == 1 {
+                "Added to the queue".to_owned()
+            } else {
+                format!("Added {n} to the queue")
+            },
+            "Tracks split one after another; results land in the Library.",
+        );
+    }
+
+    /// Start the next queued item when nothing is running.
+    fn tick_queue(&mut self, now: f64) {
+        // The section picker is a step of the current job: the queue waits for it.
+        if self.job.is_some() || self.section.is_some() {
+            return;
+        }
+        if let Some(item) = self.queue.next_pending() {
+            let (id, source) = (item.id, item.source.clone());
+            self.launch(source, now, Some(id));
+            if self.job.is_none()
+                && let Some(item) = self.queue.get_mut(id)
+            {
+                // No model available: launch() already said why.
+                item.status = ItemStatus::Failed("couldn't start".into());
+            }
+        }
+    }
+
+    /// Cancel a running queue item, or drop a waiting / finished one.
+    pub fn queue_remove(&mut self, id: u64) {
+        let running_job = self.queue.running().and_then(|i| match i.status {
+            ItemStatus::Running { job_id } if i.id == id => Some(job_id),
+            _ => None,
+        });
+        match running_job {
+            Some(job_id) if self.job.as_ref().is_some_and(|j| j.id == job_id) => self.cancel_job(),
+            _ => self.queue.remove(id),
+        }
+    }
+
+    pub fn queue_retry(&mut self, id: u64) {
+        if let Some(item) = self.queue.get_mut(id) {
+            item.status = ItemStatus::Pending;
+        }
     }
 
     pub fn reopen(&mut self, entry: &HistoryEntry, now: f64) {
@@ -264,6 +658,7 @@ impl StemApp {
             cancel: Arc::new(AtomicBool::new(false)),
             shown: Stage::Decoding.overall(0.0),
             reopening: true,
+            preparing: false,
         });
         self.page = Page::Split;
         pipeline::spawn_load_history(
@@ -291,6 +686,10 @@ impl StemApp {
             .iter()
             .map(|s| s.audio.duration_secs())
             .fold(0.0, f64::max);
+        // A refine run belongs to the session it started in.
+        self.cancel_refine();
+        self.refine = None;
+        let kinds: Vec<StemKind> = out.stems.iter().map(|s| s.kind).collect();
         let mut tracks = Vec::new();
         let mut audio = Vec::new();
         for s in out.stems {
@@ -302,11 +701,26 @@ impl StemApp {
                 mute: false,
                 solo: false,
                 level: 0.0,
+                parent: pipeline::refine::parent_kind(s.kind, &kinds),
             });
             audio.push(s.audio);
         }
         let audio = Arc::new(audio);
         self.player.load(audio.clone());
+        let mut analysis = out.analysis;
+        // Keep a halve / double the user picked last time.
+        if let (Some(a), Some(saved)) = (
+            &mut analysis,
+            self.settings
+                .history
+                .iter()
+                .find(|h| h.out_dir == out.out_dir)
+                .and_then(|h| h.bpm),
+        ) {
+            a.apply_saved_bpm(saved);
+        }
+        let timeline = crate::timeline::Timeline::new(duration, audio.clone());
+        let chop = crate::chop::ChopState::load(&out.out_dir);
         self.session = Some(Session {
             title: out.title,
             out_dir: out.out_dir,
@@ -315,6 +729,10 @@ impl StemApp {
             audio,
             selection: None,
             sel_track: 0,
+            analysis,
+            timeline,
+            chop,
+            origin: out.origin,
         });
     }
 
@@ -323,14 +741,107 @@ impl StemApp {
             return;
         }
         if let Some(info) = self.backend.models.iter().find(|m| m.id == id).cloned() {
-            self.model_downloads.insert(id.to_owned(), Some(0.0));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let resumed = self.backend.manager().partial_bytes(&info);
+            self.model_downloads.insert(
+                id.to_owned(),
+                ModelDl {
+                    status: DownloadStatus {
+                        done: resumed,
+                        total: Some(info.size_bytes),
+                        resumed_from: resumed,
+                        ..Default::default()
+                    },
+                    cancel: cancel.clone(),
+                },
+            );
             pipeline::spawn_model_download(
                 info,
                 self.backend.paths.models.clone(),
                 self.demo(),
+                cancel,
                 self.notifier.clone(),
             );
         }
+    }
+
+    /// Stop a model download; its partial file stays and the next download resumes it.
+    pub fn cancel_model_download(&mut self, id: &str) {
+        if let Some(d) = self.model_downloads.get(id) {
+            d.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn install_ffmpeg(&mut self) {
+        if self.ffmpeg.busy {
+            return;
+        }
+        self.ffmpeg.busy = true;
+        self.ffmpeg.frac = None;
+        self.ffmpeg.msg = "Starting".into();
+        pipeline::spawn_ffmpeg_install(
+            self.backend.paths.clone(),
+            self.demo(),
+            self.notifier.clone(),
+        );
+    }
+
+    /// ffmpeg in the tools folder or on PATH (looked up once, then cached).
+    pub fn ffmpeg_path(&mut self) -> Option<PathBuf> {
+        if self.ffmpeg.found.is_none() {
+            let p = &self.backend.paths;
+            let found = if self.shot.is_some() {
+                None
+            } else {
+                stem_fetch::Fetcher::new(p.tools.clone(), p.downloads.clone()).find_ffmpeg()
+            };
+            self.ffmpeg.found = Some(found);
+        }
+        self.ffmpeg.found.clone().flatten()
+    }
+
+    /// Size of the raw downloads folder (measured once, then cached until it changes).
+    pub fn downloads_size(&mut self) -> u64 {
+        *self
+            .downloads_size
+            .get_or_insert_with(|| crate::paths::dir_size(&self.backend.paths.downloads))
+    }
+
+    pub fn clear_downloads(&mut self) {
+        let dir = self.backend.paths.downloads.clone();
+        match crate::paths::clear_dir(&dir) {
+            Ok(n) => self.toasts.success(
+                "Downloads cache cleared",
+                format!("Freed {}", crate::backend::human_bytes(n)),
+            ),
+            Err(e) => self.toasts.error("Couldn't clear the cache", e.to_string()),
+        }
+        self.downloads_size = None;
+    }
+
+    pub fn stem_cache_dir(&self) -> PathBuf {
+        pipeline::cache::dir(&self.backend.paths, self.demo())
+    }
+
+    /// Size of the stem cache (measured once, then cached until it changes).
+    pub fn stem_cache_size(&mut self) -> u64 {
+        if self.stem_cache_size.is_none() {
+            let dir = self.stem_cache_dir();
+            self.stem_cache_size = Some(crate::paths::dir_size(&dir));
+        }
+        self.stem_cache_size.unwrap_or(0)
+    }
+
+    pub fn clear_stem_cache(&mut self) {
+        let dir = self.stem_cache_dir();
+        match crate::paths::clear_dir(&dir) {
+            Ok(n) => self.toasts.success(
+                "Stem cache cleared",
+                format!("Freed {}", crate::backend::human_bytes(n)),
+            ),
+            Err(e) => self.toasts.error("Couldn't clear the cache", e.to_string()),
+        }
+        self.stem_cache_size = None;
     }
 
     pub fn update_ytdlp(&mut self) {
@@ -344,56 +855,145 @@ impl StemApp {
         }
     }
 
-    /// Export the current selection from `include` stems as one WAV sample.
-    pub fn export_selection(&mut self, include: Vec<usize>) {
-        let Some(s) = &self.session else { return };
+    /// The sample-export job for the current selection over `include` stems.
+    fn sample_job(&mut self, include: Vec<usize>) -> Option<pipeline::SampleExport> {
+        let s = self.session.as_ref()?;
         let Some((a, b)) = s.selection else {
             self.toasts.info(
                 "Select a region first",
                 "Drag across a waveform to pick a sample.",
             );
-            return;
+            return None;
         };
         let name = if include.len() == 1 {
             s.tracks[include[0]].kind.label().to_owned()
         } else {
             "Mix".to_owned()
         };
-        let stamp = crate::backend::mmss_ms(a)
-            .replace(':', "m")
-            .replace('.', "s");
-        let file = sanitize_file_name(&format!("{} - {} {}", s.title, name, stamp));
-        let path = s.out_dir.join("Samples").join(format!("{file}.wav"));
-        pipeline::spawn_sample_export(
-            pipeline::SampleExport {
+        // Zero-crossing edges, or an exact N-bar loop when the selection is close to one.
+        let parts: Vec<&AudioBuffer> = include.iter().filter_map(|&i| s.audio.get(i)).collect();
+        let grid = s.analysis.as_ref().and_then(|x| x.grid.as_ref());
+        let (f0, f1, bars) =
+            crate::analysis::export_bounds(&parts, a, b, grid, self.settings.export_loop_bars);
+        let sr = parts.first().map_or(44_100.0, |p| p.sample_rate as f64);
+        // Half a frame in, so the export's `(t * sr) as usize` lands on exactly these frames.
+        let (a, b) = ((f0 as f64 + 0.5) / sr, (f1 as f64 + 0.5) / sr);
+        let ana = s.analysis.as_ref();
+        // Bar loops get `smpl` loop points over the whole file (clamped when rendering);
+        // short hits are flagged as one-shots.
+        let meta = crate::export::wav_meta(
+            ana,
+            bars.is_none() && b - a < 2.0,
+            bars.map(|_| (0, u32::MAX)),
+        );
+        let file = crate::analysis::sample_file_name(
+            &s.file_title(),
+            &name,
+            ana.and_then(|x| x.bpm()),
+            ana.and_then(|x| x.key.as_ref()),
+            a,
+            bars,
+        );
+        let format = self.settings.export_format.audio_format();
+        let path = s
+            .out_dir
+            .join("Samples")
+            .join(format!("{file}.{}", format.extension()));
+        Some(pipeline::SampleExport {
+            stems: s.audio.clone(),
+            include,
+            start: a,
+            end: b,
+            fade_ms: self.settings.sample_fade_ms,
+            normalize: self.settings.normalize_samples,
+            format,
+            path,
+            meta,
+        })
+    }
+
+    /// Export the current selection from `include` stems as one sample file.
+    pub fn export_selection(&mut self, include: Vec<usize>) {
+        if let Some(job) = self.sample_job(include) {
+            pipeline::spawn_sample_export(job, self.notifier.clone());
+        }
+    }
+
+    /// Drag files out of the app (into a DAW / Explorer). Without native drag support this
+    /// reveals the first file's folder instead.
+    pub fn drag_out(&mut self, paths: Vec<PathBuf>) {
+        if crate::dragout::NATIVE {
+            if !paths.is_empty() {
+                self.pending_drag = Some(paths);
+            }
+        } else if let Some(dir) = paths.first().and_then(|p| p.parent()) {
+            let dir = dir.to_path_buf();
+            self.open_folder(&dir);
+        }
+    }
+
+    /// A stem's drag pill: dragging starts an OS drag, a click reveals the file.
+    pub fn file_pill(&mut self, path: PathBuf, action: PillAction) {
+        match action {
+            PillAction::Drag => self.drag_out(vec![path]),
+            PillAction::Click => {
+                if let Some(dir) = path.parent() {
+                    let dir = dir.to_path_buf();
+                    self.open_folder(&dir);
+                }
+            }
+        }
+    }
+
+    /// The selection's drag pill: writes the sample to the Samples folder right away, then
+    /// drags that file out (or, on a click, reveals it).
+    pub fn selection_pill(&mut self, include: Vec<usize>, action: PillAction) {
+        let Some(job) = self.sample_job(include) else {
+            return;
+        };
+        if self.shot.is_some() {
+            return;
+        }
+        match pipeline::render_sample(&job) {
+            Ok(path) => self.file_pill(path, action),
+            Err(e) => self.toasts.error("Export failed", e),
+        }
+    }
+
+    /// Open the "Export stems" dialog.
+    pub fn export_all_stems(&mut self) {
+        let Some(s) = &self.session else { return };
+        self.export_dialog = Some(ExportDialog {
+            selected: vec![true; s.tracks.len()],
+            dest: s.out_dir.join("Export"),
+        });
+    }
+
+    /// Run the export described by the open dialog and close it.
+    pub fn run_export(&mut self) {
+        let (Some(s), Some(d)) = (&self.session, self.export_dialog.take()) else {
+            return;
+        };
+        let kinds: Vec<StemKind> = s.tracks.iter().map(|t| t.kind).collect();
+        let items = crate::export::plan(&kinds, &d.selected, self.settings.export_without);
+        if items.is_empty() {
+            self.toasts
+                .info("Nothing to export", "Pick at least one stem.");
+            return;
+        }
+        self.export_busy = true;
+        crate::export::spawn(
+            crate::export::StemExport {
+                names: s.names(),
+                meta: crate::export::wav_meta(s.analysis.as_ref(), false, None),
                 stems: s.audio.clone(),
-                include,
-                start: a,
-                end: b,
-                fade_ms: self.settings.sample_fade_ms,
-                normalize: self.settings.normalize_samples,
-                format: self.settings.wav.format(),
-                path,
+                items,
+                template: self.settings.export_template.clone(),
+                format: self.settings.export_format.audio_format(),
+                dest: d.dest,
             },
             self.notifier.clone(),
         );
-    }
-
-    pub fn export_all_stems(&mut self) {
-        let Some(s) = &self.session else { return };
-        let files: Vec<PathBuf> = s.tracks.iter().map(|t| t.path.clone()).collect();
-        let dest = if self.shot.is_some() {
-            None
-        } else {
-            rfd::FileDialog::new()
-                .set_title("Export stems to…")
-                .set_directory(&self.settings.output_dir)
-                .pick_folder()
-        };
-        if let Some(dest) = dest {
-            let dest = dest.join(sanitize_file_name(&s.title));
-            pipeline::spawn_copy_stems(files, dest, self.notifier.clone());
-        }
     }
 
     pub fn open_folder(&mut self, path: &std::path::Path) {
@@ -409,11 +1009,16 @@ impl StemApp {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 AppEvent::Job(id, ev) => self.on_job_event(id, ev, now),
-                AppEvent::ModelProgress(id, f) => {
-                    self.model_downloads.insert(id, f);
+                AppEvent::ModelProgress(id, st) => {
+                    if let Some(d) = self.model_downloads.get_mut(&id) {
+                        d.status = st;
+                    }
                 }
                 AppEvent::ModelDone(id, res) => {
-                    self.model_downloads.remove(&id);
+                    let cancelled = self
+                        .model_downloads
+                        .remove(&id)
+                        .is_some_and(|d| d.cancel.load(Ordering::Relaxed));
                     let name = self
                         .backend
                         .models
@@ -425,11 +1030,51 @@ impl StemApp {
                             self.backend.set_downloaded(&id, true);
                             self.toasts.success("Model ready", name);
                         }
+                        Err(_) if cancelled => self.toasts.info(
+                            "Download paused",
+                            format!("{name} picks up where it left off next time."),
+                        ),
                         Err(e) => self.toasts.error(format!("{name} download failed"), e),
                     }
                 }
-                AppEvent::Notice(Ok(msg)) => self.toasts.success("Done", msg),
-                AppEvent::Notice(Err(msg)) => self.toasts.error("Something went wrong", msg),
+                AppEvent::PlaylistExpanded(item, res) => match res {
+                    Ok(entries) => {
+                        let n = entries.len();
+                        self.queue.expand(item, entries);
+                        self.toasts
+                            .success("Playlist added", format!("{n} tracks queued"));
+                    }
+                    Err(e) => {
+                        if let Some(i) = self.queue.get_mut(item) {
+                            i.status = ItemStatus::Failed(e.clone());
+                        }
+                        self.toasts.error("Couldn't read the playlist", e);
+                    }
+                },
+                AppEvent::FfmpegProgress(frac, msg) => {
+                    self.ffmpeg.frac = frac;
+                    self.ffmpeg.msg = msg;
+                }
+                AppEvent::FfmpegDone(res) => {
+                    self.ffmpeg.busy = false;
+                    self.ffmpeg.found = None;
+                    match res {
+                        Ok(p) => self
+                            .toasts
+                            .success("ffmpeg installed", p.display().to_string()),
+                        Err(e) => self.toasts.error("ffmpeg install failed", e),
+                    }
+                }
+                AppEvent::StemsExported(res) => {
+                    self.export_busy = false;
+                    match res {
+                        Ok((msg, _dir)) => {
+                            crate::widgets::buttons::export_succeeded();
+                            self.toasts.success("Stems exported", msg)
+                        }
+                        Err(e) => self.toasts.error("Export failed", e),
+                    }
+                }
                 AppEvent::YtDlpUpdated(res) => {
                     self.ytdlp_busy = false;
                     match res {
@@ -437,13 +1082,17 @@ impl StemApp {
                         Err(e) => self.toasts.error("yt-dlp update failed", e),
                     }
                 }
+                AppEvent::Refine(id, ev) => self.on_refine_event(id, ev),
                 AppEvent::SampleExported(res) => match res {
-                    Ok(p) => self.toasts.success(
-                        "Sample exported",
-                        p.file_name()
-                            .map(|f| f.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                    ),
+                    Ok(p) => {
+                        crate::widgets::buttons::export_succeeded();
+                        self.toasts.success(
+                            "Sample exported",
+                            p.file_name()
+                                .map(|f| f.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        )
+                    }
                     Err(e) => self.toasts.error("Export failed", e),
                 },
             }
@@ -461,15 +1110,38 @@ impl StemApp {
                 job.frac = None;
             }
             JobEvent::Progress(f) => job.frac = f,
-            JobEvent::Title(t) => job.title = t,
-            JobEvent::Done(out) => {
+            JobEvent::Prepared(prep) => {
+                self.job = None;
+                // The picker auditions the full mix through the normal player.
+                self.player.load(prep.audio.clone());
+                self.player.set_gain(0, 1.0);
+                let preset = self.pending_preset.take();
+                self.section = Some(crate::section::SectionPick::new(*prep, preset));
+            }
+            JobEvent::Title(t) => {
+                job.title = t.clone();
+                if let Some(item) = self.queue.by_job(id) {
+                    item.title = t;
+                }
+            }
+            JobEvent::Done(mut out) => {
                 let reopening = job.reopening;
                 let model_name = job.model_name.clone();
                 let source = job.source.display();
                 self.job = None;
+                self.downloads_size = None;
+                self.stem_cache_size = None;
                 let n = out.stems.len();
+                let (bpm, key) = out.analysis.as_ref().map_or((None, None), |a| {
+                    (a.bpm(), a.key.as_ref().map(|k| k.name()))
+                });
                 if !reopening {
-                    self.settings.push_history(HistoryEntry {
+                    // The worker only saw the fetched file; remember the link the user gave.
+                    if out.origin.source != source {
+                        out.origin.source = source.clone();
+                        out.origin.save(&out.out_dir);
+                    }
+                    let entry = HistoryEntry {
                         title: out.title.clone(),
                         source,
                         model_name,
@@ -477,9 +1149,34 @@ impl StemApp {
                         out_dir: out.out_dir.clone(),
                         when: now_unix(),
                         duration_secs: out.stems.first().map_or(0.0, |s| s.audio.duration_secs()),
-                    });
+                        bpm,
+                        key,
+                    };
+                    self.settings.push_history(entry.clone());
                     self.toasts
                         .success(format!("{n} stems ready"), out.title.clone());
+                    // Batch jobs land in the library; the queue panel offers "Open".
+                    if let Some(item) = self.queue.by_job(id) {
+                        item.title = out.title.clone();
+                        item.status = ItemStatus::Done(Box::new(entry));
+                        return;
+                    }
+                    self.fx.celebrate(
+                        out.stems
+                            .iter()
+                            .map(|s| theme::stem_color(s.kind))
+                            .collect(),
+                        format!("{n} STEMS READY"),
+                    );
+                } else if let Some(h) = self
+                    .settings
+                    .history
+                    .iter_mut()
+                    .find(|h| h.out_dir == out.out_dir)
+                {
+                    // Entries from before analysis existed get their tempo / key now.
+                    h.bpm = h.bpm.or(bpm);
+                    h.key = h.key.take().or(key);
                 }
                 self.open_session(*out);
             }
@@ -489,6 +1186,10 @@ impl StemApp {
                 let reopening = job.reopening;
                 self.job = None;
                 self.toasts.error("Split failed", msg.clone());
+                if let Some(item) = self.queue.by_job(id) {
+                    item.status = ItemStatus::Failed(msg);
+                    return;
+                }
                 if !reopening {
                     self.failure = Some(Failure {
                         title,
@@ -500,6 +1201,9 @@ impl StemApp {
             JobEvent::Cancelled => {
                 self.job = None;
                 self.toasts.info("Cancelled", "");
+                if let Some(item) = self.queue.by_job(id) {
+                    item.status = ItemStatus::Cancelled;
+                }
             }
         }
     }
@@ -508,13 +1212,41 @@ impl StemApp {
         let (hovering, dropped) = ctx.input(|i| {
             (
                 !i.raw.hovered_files.is_empty(),
-                i.raw.dropped_files.first().map(|f| f.path().to_path_buf()),
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|f| f.path().to_path_buf())
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect::<Vec<_>>(),
             )
         });
         self.drop_hover = hovering || self.shot.as_ref().is_some_and(|s| s.force_drop);
-        if let Some(path) = dropped {
-            self.start_job(InputSource::File(path), now);
+        let mut dropped = dropped;
+        if now - self.dragged_out.1 < 3.0 {
+            let ours: Vec<PathBuf> = self.dragged_out.0.iter().map(|p| abs(p)).collect();
+            dropped.retain(|p| !ours.contains(&abs(p)));
         }
+        match dropped.len() {
+            0 => {}
+            1 => {
+                let path = dropped.into_iter().next().unwrap_or_default();
+                self.start_job(InputSource::File(path), now);
+            }
+            _ => self.enqueue(dropped.into_iter().map(InputSource::File).collect()),
+        }
+    }
+
+    /// Loudest audible stem right now (0..1): drives the audio-reactive chrome.
+    pub fn master_level(&self) -> f32 {
+        let Some(s) = &self.session else { return 0.0 };
+        if !self.player.is_playing() && self.shot.is_none() {
+            return 0.0;
+        }
+        (0..s.tracks.len())
+            .filter(|i| s.audible(*i))
+            .map(|i| s.tracks[i].level)
+            .fold(0.0, f32::max)
+            .min(1.0)
     }
 
     fn sync_player(&mut self, dt: f32) {
@@ -541,13 +1273,21 @@ impl StemApp {
 }
 
 impl eframe::App for StemApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        if let Some(p) = &mut self.perf {
+            p.add(frame.info().cpu_usage);
+        }
+        theme::motion::set_reduced(self.settings.reduce_motion);
         self.pump(now);
+        crate::fx::poll(self);
         self.handle_drops(&ctx, now);
+        self.tick_queue(now);
         self.sync_player(dt);
+        let master = self.master_level();
+        self.fx.tick(dt, master);
 
         if let Some(job) = &mut self.job {
             let target = job.overall();
@@ -555,7 +1295,8 @@ impl eframe::App for StemApp {
         }
 
         // Space toggles playback.
-        if self.session.is_some()
+        if (self.session.is_some() || self.section.is_some())
+            && self.midi.is_none()
             && !ctx.egui_wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::Space))
         {
@@ -563,15 +1304,35 @@ impl eframe::App for StemApp {
         }
 
         views::draw(self, ui);
+        let chop_animating = views::chop_tick(self, now);
         self.toasts.show(&ctx);
+        let intro = self.splash.show(&ctx);
+
+        // Native drag-out runs the OS drag loop right here, while the button is still down.
+        if let Some(paths) = self.pending_drag.take() {
+            match crate::dragout::drag_files(frame, &paths) {
+                Ok(()) => {
+                    self.release_pointer = true;
+                    self.dragged_out = (paths, now);
+                }
+                Err(e) => self.toasts.error("Couldn't start the drag", e),
+            }
+        }
 
         // Repaint only while something moves: idle = 0% CPU.
-        let animating = self.job.is_some()
+        let animating = intro
+            || self.fx.is_animating()
+            || self.job.is_some()
             || self.player.is_playing()
             || self.drop_hover
             || !self.model_downloads.is_empty()
             || self.ytdlp_busy
+            || self.ffmpeg.busy
+            || self.export_busy
+            || self.queue.has_work()
             || self.toasts.is_animating()
+            || self.dsp.busy()
+            || chop_animating
             || self
                 .session
                 .as_ref()
@@ -583,6 +1344,25 @@ impl eframe::App for StemApp {
         if let Some(mut shot) = self.shot.take() {
             shot.frame(self, &ctx);
             self.shot = Some(shot);
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The OS drag loop consumed the mouse-up, so egui still thinks the button is held.
+        if self.release_pointer {
+            self.release_pointer = false;
+            let (pos, modifiers) = ctx.input(|i| (i.pointer.latest_pos(), i.modifiers));
+            if let Some(pos) = pos {
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                });
+            }
+        }
+        if let Some(shot) = &self.shot {
+            shot.filter_input(raw_input);
         }
     }
 
@@ -599,4 +1379,8 @@ impl eframe::App for StemApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         theme::BG.to_normalized_gamma_f32()
     }
+}
+
+fn abs(p: &std::path::Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }

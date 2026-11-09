@@ -223,6 +223,371 @@ pub fn dashed_rect(
     }
 }
 
+/// A texture generated once per context and cached (gradients, grain).
+pub fn cached_texture(
+    ctx: &egui::Context,
+    key: &str,
+    size: [usize; 2],
+    options: TextureOptions,
+    pixel: impl Fn(usize, usize) -> Color32,
+) -> TextureId {
+    let id = Id::unique(("stem-splitter/tex", key));
+    if let Some(tex) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
+        return tex.id();
+    }
+    let mut pixels = Vec::with_capacity(size[0] * size[1]);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            pixels.push(pixel(x, y));
+        }
+    }
+    let tex = ctx.load_texture(key, ColorImage::new(size, pixels), options);
+    let tid = tex.id();
+    ctx.data_mut(|d| d.insert_temp(id, tex));
+    tid
+}
+
+/// Gaussian-ish radial falloff (white, alpha 1 in the centre, 0 at the edge).
+fn disc_texture(ctx: &egui::Context) -> TextureId {
+    cached_texture(
+        ctx,
+        "soft-disc",
+        [96, 96],
+        TextureOptions::LINEAR,
+        |x, y| {
+            let dx = (x as f32 + 0.5) / 48.0 - 1.0;
+            let dy = (y as f32 + 0.5) / 48.0 - 1.0;
+            let d2 = dx * dx + dy * dy;
+            let a = ((-d2 * 3.2).exp() - (-3.2f32).exp()).max(0.0) / (1.0 - (-3.2f32).exp());
+            Color32::from_white_alpha((a * 255.0).round() as u8)
+        },
+    )
+}
+
+/// A soft, round light of radius `r` (one textured quad: far cheaper than a big blur).
+pub fn soft_disc(painter: &Painter, center: Pos2, r: f32, color: Color32) {
+    if color.a() == 0 || r <= 0.0 {
+        return;
+    }
+    let tex = disc_texture(painter.ctx());
+    painter.add(
+        RectShape::filled(
+            Rect::from_center_size(center, vec2(2.0 * r, 2.0 * r)),
+            CornerRadius::ZERO,
+            color,
+        )
+        .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+    );
+}
+
+/// Vertical white falloff used for glass sheens (alpha 1 at the top, 0 by 55 %).
+fn sheen_texture(ctx: &egui::Context) -> TextureId {
+    cached_texture(ctx, "sheen-v", [1, 64], TextureOptions::LINEAR, |_, y| {
+        let f = y as f32 / 63.0;
+        let a = (1.0 - f / 0.55).clamp(0.0, 1.0).powf(1.6);
+        Color32::from_white_alpha((a * 255.0) as u8)
+    })
+}
+
+/// The lit top half of a glass surface: a soft white falloff inside the rounded rect, plus a
+/// brighter hairline on the top edge. `strength` 0..1 (hover can raise it).
+pub fn glass_sheen(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius>, strength: f32) {
+    painter.extend(glass_sheen_shapes(painter.ctx(), rect, radius, strength));
+}
+
+/// [`glass_sheen`] as shapes (for painting behind content laid out later).
+pub fn glass_sheen_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    strength: f32,
+) -> Vec<Shape> {
+    let radius = radius.into();
+    let tex = sheen_texture(ctx);
+    let a = (10.0 + 10.0 * strength).min(255.0) as u8;
+    let mut out = vec![
+        RectShape::filled(rect.shrink(1.0), radius, Color32::from_white_alpha(a))
+            .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))
+            .into(),
+    ];
+    // Top-edge highlight that fades out towards the corners.
+    let r = radius.nw.max(radius.ne) as f32;
+    let y = rect.top() + 0.5;
+    let x0 = rect.left() + r * 0.6;
+    let x1 = rect.right() - r * 0.6;
+    if x1 > x0 + 4.0 {
+        let mut mesh = egui::Mesh::default();
+        let n = 16;
+        let peak = (0.10 + 0.14 * strength).min(1.0);
+        for i in 0..=n {
+            let f = i as f32 / n as f32;
+            let x = x0 + (x1 - x0) * f;
+            let a = peak * (1.0 - (2.0 * f - 1.0).powi(4));
+            let c = Color32::from_white_alpha((a * 255.0) as u8);
+            mesh.colored_vertex(pos2(x, y - 0.5), c);
+            mesh.colored_vertex(pos2(x, y + 0.7), c);
+            if i > 0 {
+                let b = (2 * i) as u32;
+                mesh.add_triangle(b - 2, b - 1, b);
+                mesh.add_triangle(b - 1, b + 1, b);
+            }
+        }
+        out.push(Shape::mesh(mesh));
+    }
+    out
+}
+
+/// A full glass card: drop shadow, translucent fill, hairline, sheen, optional coloured rim
+/// glow. The workhorse surface of the app; adopt it for new cards.
+pub fn glass(
+    painter: &Painter,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    rim: Option<Color32>,
+    hover: f32,
+) {
+    painter.extend(glass_shapes(painter.ctx(), rect, radius, rim, hover));
+}
+
+/// [`glass`] as shapes, so a frame can reserve a slot before its content and fill it after.
+pub fn glass_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    rim: Option<Color32>,
+    hover: f32,
+) -> Vec<Shape> {
+    let radius = radius.into();
+    let mut out = vec![glow_shape(
+        rect.translate(vec2(0.0, 10.0 + 4.0 * hover)),
+        radius,
+        Color32::from_black_alpha((110.0 + 40.0 * hover) as u8),
+        30.0 + 10.0 * hover,
+    )];
+    if let Some(c) = rim
+        && c.a() > 0
+    {
+        out.push(glow_shape(rect, radius, c, 22.0));
+    }
+    out.push(
+        RectShape::new(
+            rect,
+            radius,
+            theme::lerp_color(theme::GLASS, Color32::from_rgb(26, 25, 44), hover * 0.7),
+            Stroke::new(
+                1.0,
+                theme::lerp_color(theme::GLASS_STROKE, theme::STROKE_HI, hover),
+            ),
+            egui::StrokeKind::Inside,
+        )
+        .into(),
+    );
+    out.extend(glass_sheen_shapes(ctx, rect, radius, hover));
+    out
+}
+
+/// A glass card around `add`: reserves a paint slot, lays the content out, then fills the
+/// slot with [`glass_shapes`] sized to the result. `rim` tints the edge glow.
+pub fn glass_card<R>(
+    ui: &mut egui::Ui,
+    margin: impl Into<egui::Margin>,
+    rim: Option<Color32>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let slot = ui.painter().add(Shape::Noop);
+    let r = egui::Frame::new().inner_margin(margin).show(ui, add);
+    let rect = r.response.rect;
+    let mut shapes = glass_shapes(ui.ctx(), rect, theme::R_CARD, rim, 0.0);
+    // Light along the top edge in the rim colour.
+    if let Some(c) = rim {
+        shapes.extend(edge_light_shapes(
+            rect,
+            Some(rect.left() + 170.0),
+            300.0,
+            theme::alpha(opaque(c), 0.7),
+        ));
+    }
+    ui.painter().set(slot, Shape::Vec(shapes));
+    r
+}
+
+/// Soft inner glow along the inside edge of a rounded rect (neon tube look).
+pub fn inner_glow(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius>, color: Color32) {
+    let radius: CornerRadius = radius.into();
+    for (i, a) in [0.55f32, 0.28, 0.12].iter().enumerate() {
+        let inset = 1.0 + i as f32 * 1.6;
+        let mut r = radius;
+        let d = (inset as u8).min(r.nw);
+        r.nw = r.nw.saturating_sub(d);
+        r.ne = r.ne.saturating_sub(d);
+        r.sw = r.sw.saturating_sub(d);
+        r.se = r.se.saturating_sub(d);
+        painter.rect_stroke(
+            rect.shrink(inset),
+            r,
+            Stroke::new(1.6, theme::alpha(color, *a)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// Pointer-following light inside `rect` (the "hover tilt" of premium plugin UIs).
+pub fn spotlight(painter: &Painter, rect: Rect, pointer: Pos2, color: Color32, strength: f32) {
+    if strength <= 0.0 || !rect.expand(40.0).contains(pointer) {
+        return;
+    }
+    let p = painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+    let r = rect.height().max(80.0) * 0.55;
+    glow_circle(
+        &p,
+        pointer,
+        r * 0.35,
+        theme::alpha(color, 0.10 * strength),
+        r,
+    );
+}
+
+/// A diagonal light band that sweeps across `rect` as `t` goes 0 → 1 (hover shine).
+pub fn shine(painter: &Painter, rect: Rect, t: f32, strength: f32) {
+    if t <= 0.0 || t >= 1.0 || strength <= 0.0 {
+        return;
+    }
+    let p = painter.with_clip_rect(rect.shrink(1.5).intersect(painter.clip_rect()));
+    let span = rect.width() + rect.height() + 120.0;
+    let x = rect.left() - rect.height() - 60.0 + span * t;
+    let w = 46.0;
+    let fade = (1.0 - (2.0 * t - 1.0).abs()).powf(0.5);
+    let a = (0.09 * strength * fade * 255.0) as u8;
+    let c = Color32::from_white_alpha(a);
+    let mut mesh = egui::Mesh::default();
+    // Soft-edged band: transparent – white – transparent.
+    let pts = [
+        (0.0, Color32::TRANSPARENT),
+        (w * 0.5, c),
+        (w, Color32::TRANSPARENT),
+    ];
+    for (dx, col) in pts {
+        mesh.colored_vertex(pos2(x + dx + rect.height(), rect.top()), col);
+        mesh.colored_vertex(pos2(x + dx, rect.bottom()), col);
+    }
+    for i in 0..2u32 {
+        let b = i * 2;
+        mesh.add_triangle(b, b + 1, b + 2);
+        mesh.add_triangle(b + 1, b + 3, b + 2);
+    }
+    p.add(Shape::mesh(mesh));
+}
+
+/// Keyboard focus ring, drawn just outside `rect`.
+pub fn focus_ring(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius>) {
+    let mut r: CornerRadius = radius.into();
+    r.nw = r.nw.saturating_add(3);
+    r.ne = r.ne.saturating_add(3);
+    r.sw = r.sw.saturating_add(3);
+    r.se = r.se.saturating_add(3);
+    let outer = rect.expand(3.0);
+    glow(painter, outer, r, theme::alpha(theme::FOCUS, 0.25), 8.0);
+    painter.rect_stroke(
+        outer,
+        r,
+        Stroke::new(2.0, theme::FOCUS),
+        egui::StrokeKind::Middle,
+    );
+}
+
+/// Draw the focus ring when `resp` has keyboard focus.
+pub fn focus(
+    painter: &Painter,
+    resp: &egui::Response,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+) {
+    if resp.has_focus() && painter.ctx().input(|i| !i.pointer.any_down()) {
+        focus_ring(painter, rect, radius);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RippleState {
+    pos: Pos2,
+    born: f64,
+}
+
+/// Material-style ripple: call every frame for a clickable widget. Starts on click at the
+/// pointer, expands and fades over 0.55 s, clipped to `rect`. No-op under reduced motion.
+pub fn ripple(painter: &Painter, resp: &egui::Response, rect: Rect, color: Color32) {
+    let ctx = painter.ctx();
+    let id = resp.id.with("ripple");
+    let now = ctx.input(|i| i.time);
+    if resp.clicked() && !theme::motion::reduced() {
+        let pos = resp.interact_pointer_pos().unwrap_or(rect.center());
+        ctx.data_mut(|d| d.insert_temp(id, RippleState { pos, born: now }));
+    }
+    let Some(s) = ctx.data(|d| d.get_temp::<RippleState>(id)) else {
+        return;
+    };
+    let age = (now - s.born) as f32;
+    const DUR: f32 = 0.55;
+    if age >= DUR {
+        ctx.data_mut(|d| d.remove::<RippleState>(id));
+        return;
+    }
+    let t = theme::motion::ease_out(age / DUR);
+    let far = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.left_bottom(),
+        rect.right_bottom(),
+    ]
+    .iter()
+    .map(|c| (*c - s.pos).length())
+    .fold(0.0, f32::max);
+    let p = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    p.circle_filled(s.pos, far * t, theme::alpha(color, 0.28 * (1.0 - t)));
+    ctx.request_repaint();
+}
+
+/// Text whose glyphs run along the accent gradient (`range` = u0..u1, wrapping), faded by
+/// `opacity`. Returns its rect.
+pub fn gradient_text(
+    painter: &Painter,
+    pos: Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+    range: (f32, f32),
+    opacity: f32,
+) -> Rect {
+    let (u0, u1) = range;
+    let mut job = egui::text::LayoutJob::default();
+    let n = text.chars().count().max(2) as f32 - 1.0;
+    for (i, ch) in text.chars().enumerate() {
+        let c = theme::alpha(theme::accent_at(u0 + (u1 - u0) * i as f32 / n), opacity);
+        let mut buf = [0u8; 4];
+        job.append(
+            ch.encode_utf8(&mut buf),
+            0.0,
+            egui::TextFormat::simple(font.clone(), c),
+        );
+    }
+    let galley = painter.layout_job(job);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, Color32::WHITE);
+    rect
+}
+
+/// Vertical two-colour gradient rect (no rounding) from vertex colours.
+pub fn vgradient(painter: &Painter, rect: Rect, top: Color32, bottom: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(Shape::mesh(mesh));
+}
+
 /// Thin horizontal gradient strip built from vertex colours (textured rects this thin render
 /// as solid white in the tessellator). `u0..u1` as in [`gradient_rect`].
 pub fn gradient_strip(painter: &Painter, rect: Rect, u0: f32, u1: f32) {
@@ -240,5 +605,62 @@ pub fn gradient_strip(painter: &Painter, rect: Rect, u0: f32, u1: f32) {
             mesh.add_triangle(b - 1, b + 1, b);
         }
     }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// A coloured light along the top edge of a card: a hairline that fades out towards both
+/// ends, with a soft spill of the colour just inside. `width` is the lit span, centred on
+/// `cx` (or the card's centre).
+pub fn edge_light_shapes(rect: Rect, cx: Option<f32>, width: f32, color: Color32) -> Vec<Shape> {
+    let cx = cx.unwrap_or(rect.center().x);
+    let x0 = (cx - width / 2.0).max(rect.left() + 14.0);
+    let x1 = (cx + width / 2.0).min(rect.right() - 14.0);
+    if x1 <= x0 + 4.0 {
+        return Vec::new();
+    }
+    let y = rect.top() + 0.5;
+    let n = 24;
+    let mut line = egui::Mesh::default();
+    let mut spill = egui::Mesh::default();
+    for i in 0..=n {
+        let f = i as f32 / n as f32;
+        let x = x0 + (x1 - x0) * f;
+        let a = 1.0 - (2.0 * f - 1.0).powi(2);
+        let c = theme::alpha(color, a);
+        line.colored_vertex(pos2(x, y - 0.6), c);
+        line.colored_vertex(pos2(x, y + 0.9), c);
+        spill.colored_vertex(pos2(x, y + 0.5), theme::alpha(color, 0.16 * a));
+        spill.colored_vertex(pos2(x, y + 14.0), Color32::TRANSPARENT);
+        if i > 0 {
+            let b = (2 * i) as u32;
+            for m in [&mut line, &mut spill] {
+                m.add_triangle(b - 2, b - 1, b);
+                m.add_triangle(b - 1, b + 1, b);
+            }
+        }
+    }
+    vec![Shape::mesh(spill), Shape::mesh(line)]
+}
+
+/// [`edge_light_shapes`] painted now.
+pub fn edge_light(painter: &Painter, rect: Rect, cx: Option<f32>, width: f32, color: Color32) {
+    painter.extend(edge_light_shapes(rect, cx, width, color));
+}
+
+/// Opaque version of a (premultiplied, translucent) colour, for lights tinted by a rim colour.
+pub fn opaque(c: Color32) -> Color32 {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    Color32::from_rgb(r, g, b)
+}
+
+/// Horizontal two-colour gradient rect (no rounding) from vertex colours.
+pub fn hgradient(painter: &Painter, rect: Rect, left: Color32, right: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), left);
+    mesh.colored_vertex(rect.right_top(), right);
+    mesh.colored_vertex(rect.left_bottom(), left);
+    mesh.colored_vertex(rect.right_bottom(), right);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
     painter.add(Shape::mesh(mesh));
 }

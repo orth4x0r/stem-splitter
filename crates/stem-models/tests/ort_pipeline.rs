@@ -71,6 +71,7 @@ fn mdx_through_onnxruntime() {
         sha256: None,
         size_bytes: 0,
         license: "test",
+        non_commercial: false,
     };
     let mut sep = stem_models::load(&info, &dir.join("mdx_half.onnx"), Device::Auto).unwrap();
     if !cfg!(windows) {
@@ -130,6 +131,7 @@ fn htdemucs_through_onnxruntime() {
         sha256: None,
         size_bytes: 0,
         license: "test",
+        non_commercial: false,
     };
     let mut sep = stem_models::load(&info, &dir.join("htdemucs_linear.onnx"), Device::Cpu).unwrap();
     let mix = tones(80_000, 44_100.0);
@@ -146,6 +148,63 @@ fn htdemucs_through_onnxruntime() {
             assert!(e < 1e-2, "source {s} ch {c}: {e}");
         }
     }
+}
+
+/// Run a registry model's own parameters over a synthetic spectrogram graph with the real
+/// export's I/O names and shapes; each stem must come back as `gains[s] * mix`.
+fn spec_model_through_onnxruntime(id: &str, fixture: &str, gains: &[f32]) {
+    let Some(dir) = fixtures() else { return };
+    let path = dir.join(fixture);
+    if !path.is_file() {
+        eprintln!("skipped: {fixture} missing, rerun tools/make_test_fixtures.py");
+        return;
+    }
+    let info = stem_models::find_model(id).unwrap();
+    let mut sep = stem_models::load(&info, &path, Device::Cpu).unwrap();
+    // 20 s: long enough for the reflected borders and several overlapping segments. The tones
+    // are zero-mean, so SCNet's standardisation (which drops the mean) changes nothing.
+    let mix = tones(20 * 44_100, 44_100.0);
+    let mut seen = vec![];
+    let t = std::time::Instant::now();
+    let stems = sep
+        .separate(&mix, &mut |p| seen.push(p), &AtomicBool::new(false))
+        .unwrap();
+    eprintln!(
+        "{id}: 20 s through the stand-in graph in {:.2?}",
+        t.elapsed()
+    );
+    assert_eq!(seen.last(), Some(&Progress::Separating(1.0)));
+    assert_eq!(stems.len(), info.stems.len());
+    for (s, (kind, buf)) in stems.iter().enumerate() {
+        assert_eq!(*kind, info.stems[s]);
+        for c in 0..2 {
+            assert_eq!(buf.channels[c].len(), mix.frames());
+            let e = max_err(&buf.channels[c], &mix.channels[c], gains[s], 0);
+            assert!(e < 1e-3, "{id} source {s} ch {c}: {e}");
+        }
+    }
+}
+
+#[test]
+fn mel_roformer_through_onnxruntime() {
+    // A mask of 1: vocals = mix, and the instrumental (the residual) = 0.
+    spec_model_through_onnxruntime(
+        "mel-roformer-kim",
+        "mel_roformer_identity.onnx",
+        &[1.0, 0.0],
+    );
+}
+
+#[test]
+fn bs_roformer_through_onnxruntime() {
+    let gains = [1.0, 0.5, 0.25, 0.0]; // SPEC_GAINS in the fixture script
+    spec_model_through_onnxruntime("bs-roformer-4stem", "bs_roformer_gains.onnx", &gains);
+}
+
+#[test]
+fn scnet_through_onnxruntime() {
+    let gains = [1.0, 0.5, 0.25, 0.0];
+    spec_model_through_onnxruntime("scnet", "scnet_gains.onnx", &gains);
 }
 
 #[test]

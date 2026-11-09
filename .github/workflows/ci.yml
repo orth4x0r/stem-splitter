@@ -30,8 +30,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p stem-app
+      - run: cargo build --release -p stem-app --bins
       - uses: actions/upload-artifact@v4
         with:
           name: stem-splitter-windows
-          path: target/release/stem-splitter.exe
+          path: |
+            target/release/stem-splitter.exe
+            target/release/stem-cli.exe

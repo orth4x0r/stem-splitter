@@ -11,7 +11,7 @@ use crate::widgets::toast::elide;
 use crate::widgets::{page_title, progress};
 
 fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut egui::Ui)) {
-    theme::card_frame().show(ui, |ui| {
+    let shown = theme::glass_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
             egui::RichText::new(title)
@@ -28,10 +28,11 @@ fn section(ui: &mut egui::Ui, title: &str, subtitle: &str, add: impl FnOnce(&mut
         ui.add_space(8.0);
         add(ui);
     });
+    crate::widgets::paint::glass_sheen(ui.painter(), shown.response.rect, theme::R_CARD, 0.0);
     ui.add_space(14.0);
 }
 
-fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(190.0, 34.0), Sense::hover());
         ui.painter().text(
@@ -87,11 +88,13 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     app.open_folder(&d);
                 }
             });
-            row(ui, "WAV format", |ui| {
+            row(ui, "Stem files (WAV)", |ui| {
                 let opts: Vec<(WavChoice, &str)> =
                     WavChoice::ALL.iter().map(|w| (*w, w.label())).collect();
                 buttons::segmented(ui, "wav", &mut app.settings.wav, &opts);
             });
+            super::settings_tools::export_format_row(app, ui);
+            super::settings_tools::naming_row(app, ui);
         },
     );
 
@@ -175,6 +178,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         .color(theme::TEXT_FAINT),
                 );
             });
+            super::settings_tools::ffmpeg_row(app, ui);
         },
     );
 
@@ -190,7 +194,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     section(
         ui,
         "Storage",
-        "Models, yt-dlp and downloads live here.",
+        "Models, yt-dlp, downloads and cached model output live here.",
         |ui| {
             row(ui, "Data folder", |ui| {
                 let path = app.backend.paths.data.display().to_string();
@@ -217,8 +221,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     app.open_folder(&d);
                 }
             });
+            super::settings_tools::cache_row(app, ui);
+            super::presets::cache_rows(app, ui);
         },
     );
+
+    appearance(app, ui);
 
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     let _ = Rect::NOTHING;
@@ -231,6 +239,45 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         ),
         theme::regular(12.0),
         theme::TEXT_FAINT,
+    );
+}
+
+/// Look & motion: accessibility switches for the animated parts of the UI.
+fn appearance(app: &mut StemApp, ui: &mut egui::Ui) {
+    section(
+        ui,
+        "Look & motion",
+        "Ambient light, springs, confetti and the launch intro. Progress indicators always move.",
+        |ui| {
+            row(ui, "Reduce motion", |ui| {
+                buttons::toggle_labeled(ui, &mut app.settings.reduce_motion, "Reduce motion");
+                ui.label(
+                    egui::RichText::new("Calmer UI: no drifting background, springs or bursts")
+                        .font(theme::regular(12.0))
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            row(ui, "Launch intro", |ui| {
+                let enabled = !app.settings.reduce_motion;
+                ui.add_enabled_ui(enabled, |ui| {
+                    buttons::toggle_labeled(ui, &mut app.settings.intro, "Launch intro");
+                });
+                ui.label(
+                    egui::RichText::new("One-second logo build-up when the app starts")
+                        .font(theme::regular(12.0))
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            row(ui, "Keyboard", |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Tab moves focus · Ctrl+1–4 switch pages · Space plays / pauses · ? lists every shortcut",
+                    )
+                    .font(theme::regular(12.5))
+                    .color(theme::TEXT_DIM),
+                );
+            });
+        },
     );
 }
 

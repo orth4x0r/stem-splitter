@@ -59,8 +59,39 @@ fn put(l: &mut [f32], r: &mut [f32], i: usize, v: f32, pan: f32) {
     }
 }
 
+/// The pieces of the demo kit, so a drum split has real parts to show.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Kick,
+    Snare,
+    Hat,
+    Toms,
+    Ride,
+    Crash,
+}
+
+const KIT: [Piece; 6] = [
+    Piece::Kick,
+    Piece::Snare,
+    Piece::Hat,
+    Piece::Toms,
+    Piece::Ride,
+    Piece::Crash,
+];
+
 fn drums(l: &mut [f32], r: &mut [f32]) {
+    kit(l, r, &KIT);
+}
+
+/// The demo beat's drums, only the given pieces. Each piece has its own noise source, so the
+/// parts add up to the full kit exactly.
+fn kit(l: &mut [f32], r: &mut [f32], pieces: &[Piece]) {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut snare_rng = Rng(0x2545_F491_4F6C_DD1D);
+    let mut hat_rng = Rng(0x1405_7B7E_F767_814F);
+    let mut crash_rng = Rng(0x5851_F42D_4C95_7F2D);
+    let mut ride_rng = Rng(0x6C62_272E_07BB_0142);
+    let has = |p: Piece| pieces.contains(&p);
     let sr = SR as f32;
     let eighth = beat_len() / 2.0;
     let steps = BARS * 8;
@@ -69,8 +100,10 @@ fn drums(l: &mut [f32], r: &mut [f32]) {
         let start = (t0 * sr) as usize;
         let pos = s % 8;
         let bar = s / 8;
+        // A tom fill closes every fourth bar; the kick and snare sit it out.
+        let fill = bar % 4 == 3 && pos >= 6;
         // Kick on 1, the "and" of 2 (every other bar) and 3.
-        if pos == 0 || pos == 4 || (pos == 3 && bar % 2 == 1) {
+        if has(Piece::Kick) && !fill && (pos == 0 || pos == 4 || (pos == 3 && bar % 2 == 1)) {
             let mut phase = 0.0f32;
             for k in 0..(0.45 * sr) as usize {
                 let t = k as f32 / sr;
@@ -88,22 +121,66 @@ fn drums(l: &mut [f32], r: &mut [f32]) {
             }
         }
         // Snare on 2 and 4.
-        if pos == 2 || pos == 6 {
+        if has(Piece::Snare) && !fill && (pos == 2 || pos == 6) {
             for k in 0..(0.28 * sr) as usize {
                 let t = k as f32 / sr;
-                let n = rng.next() * (-t * 16.0).exp() * 0.5;
+                let n = snare_rng.next() * (-t * 16.0).exp() * 0.5;
                 let tone = (TAU * 185.0 * t).sin() * (-t * 30.0).exp() * 0.35;
                 put(l, r, start + k, n + tone, 0.05);
             }
         }
-        // Hats on every eighth, swung, alternating accent.
+        // Toms: four sixteenths falling high to low.
+        if has(Piece::Toms) && fill {
+            for j in 0..2 {
+                let hit = (pos - 6) * 2 + j;
+                let f0 = [196.0, 165.0, 131.0, 98.0][hit];
+                let ts = start + (j as f32 * eighth / 2.0 * sr) as usize;
+                for k in 0..(0.32 * sr) as usize {
+                    let t = k as f32 / sr;
+                    let f = f0 * (1.0 + 0.35 * (-t * 30.0).exp());
+                    let v = (TAU * f * t).sin() * (-t * 9.0).exp() * 0.55;
+                    put(l, r, ts + k, v, 0.45 - 0.3 * hit as f32);
+                }
+            }
+        }
+        // Crash on the downbeat after each fill; ride on the quarters of the last four bars.
+        let crash = pos == 0 && bar % 4 == 0 && bar > 0;
+        let ride = bar >= BARS - 4 && pos % 2 == 0 && !crash;
+        if (has(Piece::Crash) && crash) || (has(Piece::Ride) && ride) {
+            let (len, decay, amp, pan) = if crash {
+                (1.6, 2.4, 0.2, 0.4)
+            } else {
+                (0.7, 4.5, 0.09, 0.55)
+            };
+            let mut prev = 0.0;
+            for k in 0..(len * sr) as usize {
+                let t = k as f32 / sr;
+                let n = if crash {
+                    crash_rng.next()
+                } else {
+                    ride_rng.next()
+                };
+                let hp = n - prev;
+                prev = n;
+                let bell = if crash {
+                    0.0
+                } else {
+                    (TAU * 3_150.0 * t).sin() * 0.6 + (TAU * 4_710.0 * t).sin() * 0.4
+                };
+                put(l, r, start + k, (hp + bell) * (-t * decay).exp() * amp, pan);
+            }
+        }
+        // Hats on every eighth, swung, alternating accent; they rest under the ride.
+        if !has(Piece::Hat) || bar >= BARS - 4 {
+            continue;
+        }
         let swing = if s % 2 == 1 { 0.06 * beat_len() } else { 0.0 };
         let hstart = ((t0 + swing) * sr) as usize;
         let accent = if s % 2 == 0 { 0.22 } else { 0.12 };
         let mut prev = 0.0;
         for k in 0..(0.05 * sr) as usize {
             let t = k as f32 / sr;
-            let n = rng.next();
+            let n = hat_rng.next();
             let hp = n - prev;
             prev = n;
             put(l, r, hstart + k, hp * (-t * 90.0).exp() * accent, -0.35);
@@ -111,19 +188,123 @@ fn drums(l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// A cheap stereo room on `l` / `r` (feedback combs, wet only): the demo's "reverb" stem.
+fn room(l: &[f32], r: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let combs = [
+        (1557usize, 0.82f32),
+        (1617, 0.8),
+        (1491, 0.83),
+        (1422, 0.81),
+    ];
+    let tail = |x: &[f32], spread: usize| -> Vec<f32> {
+        let mut out = vec![0.0f32; x.len()];
+        for &(d, g) in &combs {
+            let d = d + spread;
+            let mut buf = vec![0.0f32; x.len()];
+            for i in 0..x.len() {
+                let fb = if i >= d { buf[i - d] } else { 0.0 };
+                buf[i] = x[i] + g * fb;
+                out[i] += fb * 0.16;
+            }
+        }
+        out
+    };
+    (tail(l, 0), tail(r, 23))
+}
+
+/// Bass line per bar: (beat offset in bar, length in beats, octave shift).
+const BASS_PATTERN: [(f32, f32, f32); 4] = [
+    (0.0, 1.3, 0.0),
+    (1.5, 0.45, 0.0),
+    (2.0, 1.2, 0.0),
+    (3.5, 0.4, 12.0),
+];
+
+/// A minor pentatonic vocal phrase over two bars: (beat, length, midi).
+const PHRASE: [(f32, f32, f32); 7] = [
+    (0.0, 0.9, 69.0),
+    (1.0, 0.5, 72.0),
+    (1.5, 1.4, 74.0),
+    (3.0, 0.9, 72.0),
+    (4.0, 1.8, 69.0),
+    (6.0, 0.5, 67.0),
+    (6.5, 1.3, 64.0),
+];
+
+/// The notes a stem was synthesised from, as (start s, length s, MIDI pitch, level 0..1):
+/// demo mode's stand-in for running the transcription model.
+pub fn notes(kind: StemKind) -> Vec<(f32, f32, u8, f32)> {
+    let b = beat_len();
+    let mut out = Vec::new();
+    match kind {
+        StemKind::Bass | StemKind::Instrumental => {
+            for bar in 0..BARS {
+                let root = CHORDS[bar % CHORDS.len()][0];
+                for &(off, len, oct) in &BASS_PATTERN {
+                    let vel = if oct > 0.0 { 0.62 } else { 0.85 };
+                    out.push((
+                        (bar as f32 * 4.0 + off) * b,
+                        len * b,
+                        (root + oct) as u8,
+                        vel,
+                    ));
+                }
+            }
+        }
+        StemKind::Vocals | StemKind::Dialogue | StemKind::LeadVocals => {
+            for rep in 0..(BARS / 2) {
+                if rep % 3 == 2 {
+                    continue;
+                }
+                for (j, &(off, len, n)) in PHRASE.iter().enumerate() {
+                    let vel = 0.62 + 0.06 * ((j * 5 + rep) % 5) as f32;
+                    out.push(((rep as f32 * 8.0 + off) * b, len * b, n as u8, vel));
+                }
+            }
+        }
+        StemKind::Drums | StemKind::Effects => {}
+        StemKind::Kick
+        | StemKind::Snare
+        | StemKind::Toms
+        | StemKind::HiHat
+        | StemKind::Ride
+        | StemKind::Crash
+        | StemKind::Reverb
+        | StemKind::Noise => {}
+        StemKind::Dry | StemKind::Clean => return notes(StemKind::Vocals),
+        StemKind::Guitar | StemKind::Piano | StemKind::BackingVocals => {
+            let sixteenth = b / 4.0;
+            for s in 0..BARS * 16 {
+                if s % 3 == 2 {
+                    continue;
+                }
+                let t0 = s as f32 * sixteenth;
+                let note = chord_at(t0)[1 + (s % 3)] + 12.0;
+                out.push((t0, 0.3, note as u8, 0.55 + 0.1 * (s % 2) as f32));
+            }
+        }
+        StemKind::Other | StemKind::Music => {
+            for bar in 0..BARS {
+                for (j, &n) in CHORDS[bar % CHORDS.len()].iter().skip(1).enumerate() {
+                    out.push((
+                        bar as f32 * 4.0 * b,
+                        4.0 * b - 0.05,
+                        n as u8,
+                        0.7 - 0.06 * j as f32,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn bass(l: &mut [f32], r: &mut [f32]) {
     let sr = SR as f32;
     let b = beat_len();
-    // (beat offset in bar, length in beats, octave shift)
-    let pattern = [
-        (0.0, 1.3, 0.0),
-        (1.5, 0.45, 0.0),
-        (2.0, 1.2, 0.0),
-        (3.5, 0.4, 12.0),
-    ];
     for bar in 0..BARS {
         let root = CHORDS[bar % CHORDS.len()][0];
-        for &(off, len, oct) in &pattern {
+        for &(off, len, oct) in &BASS_PATTERN {
             let start = ((bar as f32 * 4.0 + off) * b * sr) as usize;
             let f = midi(root + oct);
             let n = (len * b * sr) as usize;
@@ -182,22 +363,12 @@ fn plucks(l: &mut [f32], r: &mut [f32], bright: f32, pan: f32) {
 fn vocals(l: &mut [f32], r: &mut [f32]) {
     let sr = SR as f32;
     let b = beat_len();
-    // A minor pentatonic phrase: (beat, length, midi)
-    let phrase = [
-        (0.0, 0.9, 69.0),
-        (1.0, 0.5, 72.0),
-        (1.5, 1.4, 74.0),
-        (3.0, 0.9, 72.0),
-        (4.0, 1.8, 69.0),
-        (6.0, 0.5, 67.0),
-        (6.5, 1.3, 64.0),
-    ];
     for rep in 0..(BARS / 2) {
         if rep % 3 == 2 {
             continue; // breathe
         }
         let base = rep as f32 * 8.0;
-        for &(off, len, n) in &phrase {
+        for &(off, len, n) in &PHRASE {
             let start = ((base + off) * b * sr) as usize;
             let f0 = midi(n);
             let cnt = (len * b * sr) as usize;
@@ -235,6 +406,29 @@ pub fn stem(kind: StemKind) -> AudioBuffer {
             bass(&mut l, &mut r);
             keys(&mut l, &mut r);
         }
+        StemKind::Kick => kit(&mut l, &mut r, &[Piece::Kick]),
+        StemKind::Snare => kit(&mut l, &mut r, &[Piece::Snare]),
+        StemKind::Toms => kit(&mut l, &mut r, &[Piece::Toms]),
+        StemKind::HiHat => kit(&mut l, &mut r, &[Piece::Hat]),
+        StemKind::Ride => kit(&mut l, &mut r, &[Piece::Ride]),
+        StemKind::Crash => kit(&mut l, &mut r, &[Piece::Crash]),
+        StemKind::Dry | StemKind::Clean => vocals(&mut l, &mut r),
+        StemKind::Reverb => {
+            vocals(&mut l, &mut r);
+            (l, r) = room(&l, &r);
+        }
+        StemKind::Noise => {
+            let mut rng = Rng(0xA076_1D64_78BD_642F);
+            let (mut lp, mut rp) = (0.0f32, 0.0f32);
+            for i in 0..n {
+                // Soft hiss with a little 60 Hz hum.
+                lp = 0.85 * lp + 0.15 * rng.next();
+                rp = 0.85 * rp + 0.15 * rng.next();
+                let hum = 0.012 * (TAU * 60.0 * i as f32 / SR as f32).sin();
+                l[i] = lp * 0.05 + hum;
+                r[i] = rp * 0.05 + hum;
+            }
+        }
     }
     AudioBuffer::new(SR, vec![l, r])
 }
@@ -242,6 +436,25 @@ pub fn stem(kind: StemKind) -> AudioBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drum_parts_add_up_to_the_kit() {
+        let full = stem(StemKind::Drums);
+        let parts: Vec<_> = StemKind::DRUM_PARTS.iter().map(|k| stem(*k)).collect();
+        let sum = AudioBuffer::mix(&parts.iter().collect::<Vec<_>>());
+        let err = full.channels[0]
+            .iter()
+            .zip(&sum.channels[0])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(err < 1e-4, "{err}");
+        for p in &parts {
+            let peak = p.channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(peak > 0.02, "every part sounds");
+        }
+        let reverb = stem(StemKind::Reverb);
+        assert!(reverb.channels[1].iter().any(|v| v.abs() > 0.01));
+    }
 
     #[test]
     fn stems_are_sane() {

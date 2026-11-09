@@ -1,0 +1,517 @@
+//! The Transform panel under the stem cards: tempo (target BPM or %), pitch (semitones +
+//! cents, or "to key"), keylock / varispeed, stretch algorithm, reverse; Preview renders in
+//! the background and auditions the result, Export writes it next to the other samples.
+
+use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, pos2, vec2};
+use stem_audio::stretch::{Algorithm, SpeedMode};
+
+use crate::analysis::bpm_label;
+use crate::app::StemApp;
+use crate::backend::mmss_ms;
+use crate::fx::{self, Purpose, Target, TempoUnit};
+use crate::theme::{self, motion};
+use crate::widgets::buttons::{self, Button};
+use crate::widgets::drag_handle::{self, PillAction};
+use crate::widgets::icons::Icon;
+use crate::widgets::{overline, paint, progress};
+
+const COL_GAP: f32 = 28.0;
+
+pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
+    let Some(s) = &app.session else { return };
+    let now = ui.input(|i| i.time);
+    let kinds: Vec<_> = s.tracks.iter().map(|t| t.kind).collect();
+    let has_sel = s.selection.is_some();
+    let sel_len = s.selection.map(|(a, b)| b - a);
+    let duration = s.duration;
+    let ana = s.analysis.clone();
+    let bpm = ana.as_ref().and_then(|a| a.bpm());
+    let key = ana.as_ref().and_then(|a| a.key);
+    if app.dsp.ui.stem >= kinds.len() {
+        app.dsp.ui.stem = 0;
+    }
+    // Follow the lane the selection was made on.
+    if has_sel && app.dsp.ui.target == Target::Selection {
+        app.dsp.ui.stem = s.sel_track.min(kinds.len().saturating_sub(1));
+    }
+    let stem_kind = kinds.get(app.dsp.ui.stem).copied();
+    let color = stem_kind.map_or(theme::VIOLET, theme::stem_color);
+
+    let mut preview = false;
+    let mut export = false;
+    let mut cancel = false;
+    let mut drag: Option<PillAction> = None;
+    let busy = app
+        .dsp
+        .render
+        .as_ref()
+        .map(|r| (r.run.frac(), r.purpose))
+        // Screenshot scenes can stage a render in flight.
+        .or_else(|| {
+            ui.data(|d| d.get_temp::<f32>(Id::unique("stem-shot/tf-render")))
+                .map(|f| (f, Purpose::Preview))
+        });
+    let current = fx::current_key(app);
+    let cached = match (&current, &app.dsp.last) {
+        (Ok(k), Some(l)) => l.key == *k,
+        _ => false,
+    };
+    let playing = app.dsp.audition.playing("transform");
+    let play_frac = app.dsp.audition.progress();
+
+    let summary = {
+        let u = &app.dsp.ui;
+        let t = u.transform(bpm, stem_kind);
+        summary_text(
+            &t,
+            bpm,
+            &kinds,
+            u,
+            sel_len
+                .filter(|_| u.target == Target::Selection)
+                .unwrap_or(duration),
+        )
+    };
+    // Narrow windows: the actions move to their own row under the controls.
+    let wide = ui.available_width() >= 1150.0;
+    let gap = if wide { COL_GAP } else { 14.0 };
+    let resp = paint::glass_card(
+        ui,
+        egui::Margin::symmetric(22, 18),
+        Some(theme::alpha(color, 0.07)),
+        |ui| {
+            ui.set_width(ui.available_width());
+            let last = &app.dsp.last;
+            let last_export = &app.dsp.last_export;
+            let u = &mut app.dsp.ui;
+            let mut actions = |ui: &mut egui::Ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(summary.as_str())
+                                .font(theme::mono(12.5))
+                                .color(theme::TEXT),
+                        )
+                        .extend(),
+                    );
+                    ui.add_space(8.0);
+                    match busy {
+                        Some((frac, purpose)) => {
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if Button::new("Cancel")
+                                        .kind(buttons::Kind::Danger)
+                                        .height(36.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        cancel = true;
+                                    }
+                                    let (r, _) = ui.allocate_exact_size(vec2(160.0, 44.0), Sense::hover());
+                                    let shown = motion::count_up(ui.ctx(), Id::unique("tf-render-pct"), frac * 100.0);
+                                    let p = ui.painter();
+                                    p.text(
+                                        pos2(r.left(), r.top() + 7.0),
+                                        Align2::LEFT_CENTER,
+                                        if purpose == Purpose::Preview { "Rendering preview" } else { "Rendering export" },
+                                        theme::semi(12.0),
+                                        theme::TEXT,
+                                    );
+                                    p.text(
+                                        pos2(r.right(), r.top() + 7.0),
+                                        Align2::RIGHT_CENTER,
+                                        format!("{shown:.0}%"),
+                                        theme::mono(12.5),
+                                        color,
+                                    );
+                                    let meter = Rect::from_min_max(pos2(r.left(), r.top() + 17.0), r.max);
+                                    progress::live_bar(p, meter, frac, now, color);
+                                });
+                            });
+                        }
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let enabled = current.is_ok();
+                                    let tip = match &current {
+                                        Ok(_) => "Write the result to Samples (selection) or Export (whole stem)",
+                                        Err(why) => why,
+                                    };
+                                    if Button::primary("Export")
+                                        .export_shimmer()
+                                        .icon(Icon::Export)
+                                        .enabled(enabled)
+                                        .tooltip(tip)
+                                        .height(40.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        export = true;
+                                    }
+                                    let label = if playing { "Stop" } else { "Preview" };
+                                    if Button::new(label)
+                                        .icon(if playing { Icon::Stop } else { Icon::Play })
+                                        .enabled(enabled)
+                                        .tooltip(if cached { "Play the rendered result again" } else { tip })
+                                        .height(40.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        preview = true;
+                                    }
+                                    if let Some(p) = &last_export {
+                                        let label = if crate::dragout::NATIVE { "Drag" } else { "Show" };
+                                        let w = drag_handle::pill_width_tall(ui, label);
+                                        let (pill, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
+                                        let tip = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                                        if let (_, Some(a)) = drag_handle::drag_pill(ui, pill, Id::unique("tf-drag"), label, color, &tip) {
+                                            drag = Some(a);
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    }
+                    ui.add_space(6.0);
+                    // Rendered result / playback line.
+                    let info = match (last, cached) {
+                        (Some(l), true) => {
+                            let dur = l.audio.duration_secs();
+                            if playing {
+                                format!(
+                                    "playing {} / {}",
+                                    mmss_ms(play_frac as f64 * dur),
+                                    mmss_ms(dur)
+                                )
+                            } else {
+                                format!("rendered {} in {:.1} s", mmss_ms(dur), l.secs)
+                            }
+                        }
+                        _ => match &current {
+                            Err(why) => why.to_string(),
+                            Ok(_) => "not rendered yet".to_owned(),
+                        },
+                    };
+                    faint(ui, &info);
+                    if playing {
+                        let (r, _) = ui.allocate_exact_size(vec2(200.0, 3.0), Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(r, CornerRadius::same(1), Color32::from_white_alpha(14));
+                        let fill = Rect::from_min_size(r.min, vec2(r.width() * play_frac.clamp(0.0, 1.0), 3.0));
+                        paint::glow(p, fill, 1, theme::alpha(color, 0.5), 6.0);
+                        p.rect_filled(fill, CornerRadius::same(1), color);
+                        paint::glow_circle(p, fill.right_center(), 2.5, theme::alpha(Color32::WHITE, 0.8), 6.0);
+                    }
+                });
+            };
+            // ---- header
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
+                crate::widgets::icon_badge(ui.painter(), r, color, Icon::Sparkle);
+                ui.add_space(4.0);
+                let text_w = (ui.available_width() - 470.0).max(120.0);
+                ui.vertical(|ui| {
+                    ui.set_max_width(text_w);
+                    ui.label(
+                        egui::RichText::new("Transform")
+                            .font(theme::semi(17.0))
+                            .color(theme::TEXT),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Re-tempo, re-pitch or flip a sample. Renders in the background; the stems stay untouched.",
+                        )
+                        .font(theme::regular(12.5))
+                        .color(theme::TEXT_DIM),
+                    );
+
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("tf-stem")
+                        .selected_text(stem_kind.map_or("Stem", |k| k.label()))
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            for (i, k) in kinds.iter().enumerate() {
+                                ui.selectable_value(&mut u.stem, i, k.label());
+                            }
+                        });
+                    ui.add_space(6.0);
+                    let sel_label = match sel_len {
+                        Some(l) => format!("Selection {l:.2} s"),
+                        None => "Selection".to_owned(),
+                    };
+                    let whole_label = format!("Whole stem {}", crate::backend::mmss(duration));
+                    buttons::segmented(
+                        ui,
+                        "tf-target",
+                        &mut u.target,
+                        &[(Target::Selection, &sel_label), (Target::Whole, &whole_label)],
+                    );
+                });
+            });
+            ui.add_space(14.0);
+
+            // ---- controls
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                // Tempo.
+                ui.vertical(|ui| {
+                    ui.set_width(if wide { 250.0 } else { 220.0 });
+                    overline(ui, "Tempo");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if bpm.is_some() {
+                            buttons::segmented(
+                                ui,
+                                "tf-unit",
+                                &mut u.unit,
+                                &[(TempoUnit::Bpm, "BPM"), (TempoUnit::Percent, "%")],
+                            );
+                        } else {
+                            u.unit = TempoUnit::Percent;
+                        }
+                        let dv = match (u.unit, bpm) {
+                            (TempoUnit::Bpm, Some(_)) => egui::DragValue::new(&mut u.bpm)
+                                .range(20.0..=400.0)
+                                .speed(0.1)
+                                .max_decimals(1)
+                                .suffix(" bpm"),
+                            _ => egui::DragValue::new(&mut u.percent)
+                                .range(25.0..=400.0)
+                                .speed(0.2)
+                                .max_decimals(1)
+                                .suffix(" %"),
+                        };
+                        big_drag(ui, dv);
+                    });
+                    ui.add_space(4.0);
+                    let factor = match (u.unit, bpm) {
+                        (TempoUnit::Bpm, Some(b)) if u.bpm > 0.0 => u.bpm / b,
+                        _ => u.percent / 100.0,
+                    };
+                    ui.horizontal(|ui| {
+                        let txt = match bpm {
+                            Some(b) => format!("detected {} bpm  ·  ×{factor:.3}", bpm_label(b)),
+                            None => format!("no tempo detected  ·  ×{factor:.3}"),
+                        };
+                        faint(ui, &txt);
+                        if (factor - 1.0).abs() > 1e-4 && link(ui, "reset").clicked() {
+                            u.percent = 100.0;
+                            if let Some(b) = bpm {
+                                u.bpm = (b * 10.0).round() / 10.0;
+                            }
+                        }
+                    });
+                });
+                ui.add_space(gap);
+                divider(ui);
+                ui.add_space(gap);
+
+                // Pitch.
+                ui.vertical(|ui| {
+                    ui.set_width(if wide { 270.0 } else { 220.0 });
+                    overline(ui, "Pitch");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        big_drag(
+                            ui,
+                            egui::DragValue::new(&mut u.semis)
+                                .range(-12..=12)
+                                .speed(0.05)
+                                .custom_formatter(|v, _| format!("{v:+.0} st")),
+                        );
+                        big_drag(
+                            ui,
+                            egui::DragValue::new(&mut u.cents)
+                                .range(-50..=50)
+                                .speed(0.3)
+                                .custom_formatter(|v, _| format!("{v:+.0} ct")),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| match key {
+                        Some(k) => {
+                            let to = fx::transpose_key(&k, u.semis as f64 + u.cents as f64 / 100.0);
+                            faint(ui, &format!("{} → ", k.short()));
+                            egui::ComboBox::from_id_salt("tf-key")
+                                .selected_text(
+                                    egui::RichText::new(to.short()).font(theme::mono(12.5)),
+                                )
+                                .width(70.0)
+                                .show_ui(ui, |ui| {
+                                    for target in fx::keys_in(k.mode) {
+                                        let d = fx::semitones_to(&k, target.tonic);
+                                        let label = format!("{:<4} {d:+}", target.short());
+                                        if ui
+                                            .selectable_label(
+                                                to.tonic == target.tonic && u.cents == 0,
+                                                egui::RichText::new(label).font(theme::mono(12.5)),
+                                            )
+                                            .clicked()
+                                        {
+                                            u.semis = d;
+                                            u.cents = 0;
+                                        }
+                                    }
+                                });
+                            if (u.semis != 0 || u.cents != 0) && link(ui, "reset").clicked() {
+                                u.semis = 0;
+                                u.cents = 0;
+                            }
+                        }
+                        None => faint(ui, "no key detected"),
+                    });
+                });
+                ui.add_space(gap);
+                divider(ui);
+                ui.add_space(gap);
+
+                // Mode.
+                ui.vertical(|ui| {
+                    ui.set_width(if wide { 300.0 } else { 210.0 });
+                    overline(ui, "Mode");
+                    ui.add_space(4.0);
+                    buttons::segmented(
+                        ui,
+                        "tf-mode",
+                        &mut u.mode,
+                        &[
+                            (SpeedMode::Keylock, "Keylock"),
+                            (SpeedMode::Varispeed, "Varispeed"),
+                        ],
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if u.mode == SpeedMode::Keylock {
+                            buttons::segmented(
+                                ui,
+                                "tf-algo",
+                                &mut u.algorithm,
+                                &[
+                                    (Algorithm::Auto, "Auto"),
+                                    (Algorithm::Tonal, "Tonal"),
+                                    (Algorithm::Percussive, "Drums"),
+                                ],
+                            );
+                        } else {
+                            faint(ui, "pitch follows speed, like a sampler");
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        buttons::toggle(ui, &mut u.reverse);
+                        ui.label(
+                            egui::RichText::new("Reverse")
+                                .font(theme::regular(13.5))
+                                .color(theme::TEXT),
+                        );
+                    });
+                });
+                if wide {
+                    actions(ui);
+                }
+            });
+            if !wide {
+                ui.add_space(10.0);
+                let y = ui.cursor().top();
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y,
+                    Stroke::new(1.0, theme::alpha(theme::STROKE, 0.8)),
+                );
+                ui.add_space(10.0);
+                actions(ui);
+            }
+        },
+    );
+
+    if app.dsp.scroll_to_panel {
+        // Keep asking until the panel is on screen (the first frames have no layout yet).
+        if ui.clip_rect().contains_rect(resp.response.rect) {
+            app.dsp.scroll_to_panel = false;
+        } else {
+            ui.scroll_to_rect(resp.response.rect, Some(egui::Align::Max));
+        }
+    }
+    if cancel {
+        app.dsp.cancel_render();
+    }
+    if preview {
+        if playing {
+            app.dsp.audition.stop();
+        } else {
+            fx::start(app, Purpose::Preview, now);
+        }
+    }
+    if export {
+        fx::start(app, Purpose::Export, now);
+    }
+    if let Some(a) = drag
+        && let Some(p) = app.dsp.last_export.clone()
+    {
+        app.file_pill(p, a);
+    }
+}
+
+/// "→ 95 bpm · +3 st · 2.53 s".
+fn summary_text(
+    t: &stem_audio::stretch::Transform,
+    bpm: Option<f32>,
+    _kinds: &[stem_models::StemKind],
+    _u: &fx::TransformUi,
+    src_len: f64,
+) -> String {
+    let mut parts = Vec::new();
+    let tempo = t.tempo_factor();
+    match bpm {
+        Some(b) => parts.push(format!("{} bpm", bpm_label(b * tempo as f32))),
+        None => parts.push(format!("{:.1}%", tempo * 100.0)),
+    }
+    let st = t.pitch_semitones();
+    parts.push(if st.abs() < 0.005 {
+        "±0 st".to_owned()
+    } else {
+        format!("{st:+.2} st").replace(".00", "")
+    });
+    parts.push(format!("{:.2} s", src_len * t.length_factor()));
+    if t.reverse {
+        parts.push("reversed".into());
+    }
+    format!("→ {}", parts.join("  ·  "))
+}
+
+/// Larger DragValue with the mono font on a raised surface.
+fn big_drag(ui: &mut egui::Ui, dv: egui::DragValue<'_>) {
+    ui.scope(|ui| {
+        ui.style_mut().override_font_id = Some(theme::mono(16.0));
+        ui.spacing_mut().interact_size = vec2(84.0, 34.0);
+        ui.add_sized(vec2(96.0, 34.0), dv)
+            .on_hover_text("Drag or click to type");
+    });
+}
+
+fn faint(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(theme::regular(12.0))
+            .color(theme::TEXT_FAINT),
+    );
+}
+
+fn link(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::semi(12.0))
+                .color(theme::VIOLET),
+        )
+        .sense(Sense::click()),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn divider(ui: &mut egui::Ui) {
+    let (r, _) = ui.allocate_exact_size(vec2(1.0, 92.0), Sense::hover());
+    ui.painter()
+        .vline(r.center().x, r.y_range(), Stroke::new(1.0, theme::STROKE));
+}

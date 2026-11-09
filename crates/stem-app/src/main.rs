@@ -6,15 +6,30 @@
 //! * `STEM_SHOT=out.png STEM_SCENE=<scene>`  render a scene, save a screenshot, exit
 //!   (see `shot.rs`).
 
+mod analysis;
 mod app;
+mod audition;
 mod backend;
+mod chop;
+mod chop_export;
 mod demo;
+mod dragout;
+mod effects;
+mod export;
+mod fx;
+mod midi;
+mod pads;
 mod paths;
 mod pipeline;
 mod player;
+mod queue;
+mod refine;
+mod section;
 mod settings;
 mod shot;
+mod splash;
 mod theme;
+mod timeline;
 mod views;
 mod waveform;
 mod widgets;
@@ -61,7 +76,14 @@ fn main() -> eframe::Result<()> {
     let demo = std::env::var("STEM_DEMO").is_ok_and(|v| v != "0" && !v.is_empty());
     let shot = shot::Shot::from_env();
     let size = if shot.is_some() {
-        [1440.0, 900.0]
+        // STEM_SHOT_SIZE=1920x1080 renders other window sizes.
+        std::env::var("STEM_SHOT_SIZE")
+            .ok()
+            .and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some([w.parse().ok()?, h.parse().ok()?])
+            })
+            .unwrap_or([1440.0, 900.0])
     } else {
         [1320.0, 860.0]
     };

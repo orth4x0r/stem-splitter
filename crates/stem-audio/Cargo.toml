@@ -7,7 +7,11 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+serde.workspace = true
 symphonia = { version = "0.6", features = ["all"] }
 rubato = "5"
 hound = "3.5"
 realfft = "3.5"
+# Export formats. Both pure Rust (FLAC: Apache-2.0, MP3 CBR: MIT/Apache-2.0).
+flacenc = { version = "0.5.1", default-features = false, features = ["par"] }
+audio2mp3-core = "0.2.0"

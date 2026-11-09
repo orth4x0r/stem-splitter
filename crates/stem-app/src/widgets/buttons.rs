@@ -5,9 +5,13 @@ use eframe::egui::{
     Vec2, WidgetInfo, pos2, vec2,
 };
 
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use super::icons::{self, Icon};
 use super::paint;
-use crate::theme;
+use crate::theme::{self, motion};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -21,6 +25,31 @@ pub enum Kind {
     Danger,
 }
 
+/// When the last export finished successfully (ms since [`clock`] started, 0 = never).
+static EXPORT_OK: AtomicU64 = AtomicU64::new(0);
+
+fn clock() -> f64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Record a successful export: Export buttons shimmer for a moment afterwards.
+pub fn export_succeeded() {
+    EXPORT_OK.store((clock() * 1000.0) as u64 + 1, Ordering::Relaxed);
+}
+
+/// Seconds since the last successful export, while the shimmer is still running.
+fn export_shimmer_age() -> Option<f32> {
+    let ms = EXPORT_OK.load(Ordering::Relaxed);
+    if ms == 0 {
+        return None;
+    }
+    let age = (clock() - (ms - 1) as f64 / 1000.0) as f32;
+    (age < SHIMMER_LEN).then_some(age)
+}
+
+const SHIMMER_LEN: f32 = 1.8;
+
 pub struct Button<'a> {
     label: &'a str,
     icon: Option<Icon>,
@@ -29,6 +58,7 @@ pub struct Button<'a> {
     min_width: f32,
     height: f32,
     tooltip: Option<&'a str>,
+    shimmer: bool,
 }
 
 impl<'a> Button<'a> {
@@ -41,6 +71,7 @@ impl<'a> Button<'a> {
             min_width: 0.0,
             height: 38.0,
             tooltip: None,
+            shimmer: false,
         }
     }
     pub fn primary(label: &'a str) -> Self {
@@ -71,6 +102,11 @@ impl<'a> Button<'a> {
     }
     pub fn tooltip(mut self, t: &'a str) -> Self {
         self.tooltip = Some(t);
+        self
+    }
+    /// An Export button: shimmers for a moment after any export succeeds.
+    pub fn export_shimmer(mut self) -> Self {
+        self.shimmer = true;
         self
     }
 
@@ -109,11 +145,23 @@ impl<'a> Button<'a> {
             return resp;
         }
         let ctx = ui.ctx();
-        let hover =
-            ctx.animate_bool_with_time(resp.id.with("h"), resp.hovered() && self.enabled, 0.15);
-        let press =
-            ctx.animate_bool_with_time(resp.id.with("p"), resp.is_pointer_button_down_on(), 0.08);
-        let rect = rect.shrink(press * 1.5);
+        let hover = ctx.animate_bool_with_time(
+            resp.id.with("h"),
+            resp.hovered() && self.enabled,
+            motion::FAST,
+        );
+        // Springy press: squash on press, overshoot back on release.
+        let press = motion::bouncy(
+            ctx,
+            resp.id.with("p"),
+            if resp.is_pointer_button_down_on() {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        let full = rect;
+        let rect = rect.shrink2(vec2(press * 2.5, press * 1.5));
         let r = CornerRadius::same((self.height * 0.32) as u8);
         let p = ui.painter();
 
@@ -126,20 +174,22 @@ impl<'a> Button<'a> {
                     theme::alpha(theme::VIOLET, 0.35 + 0.35 * hover),
                     14.0 + 10.0 * hover,
                 );
+                paint::glow(
+                    p,
+                    rect,
+                    r,
+                    theme::alpha(theme::PINK, 0.12 + 0.18 * hover),
+                    8.0,
+                );
                 let shift = hover * 0.35;
                 paint::gradient_rect(p, rect, r, shift, 1.0 + shift, Color32::WHITE);
-                // Top sheen.
-                let sheen = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.center().y));
-                p.rect_filled(
-                    sheen.shrink2(vec2(2.0, 1.0)),
-                    CornerRadius {
-                        nw: r.nw,
-                        ne: r.ne,
-                        sw: 0,
-                        se: 0,
-                    },
-                    Color32::from_white_alpha((14.0 + 14.0 * hover) as u8),
-                );
+                paint::glass_sheen(p, rect, r, 0.8 + hover);
+                // A light band sweeps across once on hover.
+                let sweep = ctx.animate_bool_with_time(resp.id.with("sweep"), resp.hovered(), 0.55);
+                if resp.hovered() {
+                    paint::shine(p, rect, sweep, 2.2);
+                }
+                paint::ripple(p, &resp, rect, Color32::WHITE);
                 Color32::WHITE
             }
             (Kind::Danger, true) => {
@@ -148,6 +198,9 @@ impl<'a> Button<'a> {
                     Color32::from_rgb(90, 28, 48),
                     hover,
                 );
+                if hover > 0.0 {
+                    paint::glow(p, rect, r, theme::alpha(theme::BAD, 0.25 * hover), 12.0);
+                }
                 p.rect(
                     rect,
                     r,
@@ -155,21 +208,30 @@ impl<'a> Button<'a> {
                     Stroke::new(1.0, theme::alpha(theme::BAD, 0.5 + 0.5 * hover)),
                     StrokeKind::Inside,
                 );
+                paint::glass_sheen(p, rect, r, hover);
+                paint::ripple(p, &resp, rect, theme::BAD);
                 theme::lerp_color(theme::BAD, Color32::WHITE, hover)
             }
             (Kind::Ghost, true) => {
                 if hover > 0.0 {
                     p.rect_filled(rect, r, Color32::from_white_alpha((10.0 * hover) as u8));
                 }
+                paint::ripple(p, &resp, rect, theme::VIOLET);
                 theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, hover)
             }
             (_, true) => {
-                let fill = theme::lerp_color(theme::CARD_HI, Color32::from_rgb(40, 38, 66), hover);
+                let fill = theme::lerp_color(
+                    Color32::from_rgba_premultiplied(26, 26, 42, 235),
+                    Color32::from_rgb(40, 38, 66),
+                    hover,
+                );
                 let stroke = theme::lerp_color(theme::STROKE_HI, theme::VIOLET, hover);
                 if hover > 0.0 {
-                    paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.18 * hover), 12.0);
+                    paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.22 * hover), 14.0);
                 }
                 p.rect(rect, r, fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
+                paint::glass_sheen(p, rect, r, 0.3 + hover);
+                paint::ripple(p, &resp, rect, theme::VIOLET);
                 theme::lerp_color(theme::TEXT, Color32::WHITE, hover)
             }
             (_, false) => {
@@ -184,6 +246,29 @@ impl<'a> Button<'a> {
             }
         };
 
+        // Post-export celebration: a green glow pulse and two light sweeps.
+        if self.shimmer
+            && self.enabled
+            && let Some(age) = export_shimmer_age()
+        {
+            let f = age / SHIMMER_LEN;
+            let fade = (1.0 - f).powf(1.5);
+            paint::glow(p, rect, r, theme::alpha(theme::GOOD, 0.35 * fade), 16.0);
+            p.rect_stroke(
+                rect,
+                r,
+                Stroke::new(1.2, theme::alpha(theme::GOOD, 0.8 * fade)),
+                StrokeKind::Inside,
+            );
+            if !motion::reduced() {
+                for k in 0..2 {
+                    let t = (age - 0.25 * k as f32) / 0.8;
+                    paint::shine(p, rect, t, 3.0 * fade);
+                }
+            }
+            ctx.request_repaint();
+        }
+
         let x0 = rect.center().x - content_w / 2.0;
         if let Some(icon) = self.icon {
             let ir =
@@ -192,6 +277,7 @@ impl<'a> Button<'a> {
         }
         let tp = pos2(x0 + icon_w + gap, rect.center().y - galley.size().y / 2.0);
         p.galley(tp, galley, text_color);
+        paint::focus(p, &resp, full, r);
         resp
     }
 }
@@ -228,12 +314,23 @@ pub fn icon_button(
     );
     let stroke = theme::lerp_color(theme::STROKE, color, (hover * 0.6).max(on));
     p.rect(rect, r, fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    paint::glass_sheen(p, rect, r, hover);
+    paint::ripple(p, &resp, rect, color);
     let fg = if on > 0.5 {
         Color32::from_rgb(12, 10, 20)
     } else {
         theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, hover)
     };
-    icons::paint(p, rect.shrink(size * 0.27), icon, fg);
+    // The glyph pops when toggled on.
+    let pop = motion::bouncy(ctx, resp.id.with("pop"), if active { 1.0 } else { 0.0 });
+    let k = 1.0 + 0.18 * (pop - on).abs();
+    icons::paint(
+        p,
+        Rect::from_center_size(rect.center(), rect.shrink(size * 0.27).size() * k),
+        icon,
+        fg,
+    );
+    paint::focus(p, &resp, rect, r);
     resp
 }
 
@@ -276,13 +373,18 @@ pub fn letter_toggle(
         Color32::from_rgb(14, 10, 22),
         on,
     );
+    paint::glass_sheen(p, rect, r, hover + 0.4 * on);
+    paint::ripple(p, &resp, rect, color);
+    let pop = motion::bouncy(ctx, resp.id.with("pop"), if active { 1.0 } else { 0.0 });
+    let k = 1.0 + 0.25 * (pop - on).abs();
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         letter,
-        theme::bold(size * 0.42),
+        theme::bold(size * 0.42 * k),
         fg,
     );
+    paint::focus(p, &resp, rect, r);
     resp
 }
 
@@ -298,6 +400,16 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32, selected: bool) -> Response
     let hover = ctx.animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.12);
     let on = ctx.animate_bool_with_time(resp.id.with("s"), selected, 0.15);
     let p = ui.painter();
+    let glow = 0.22 * hover + 0.18 * on;
+    if glow > 0.0 {
+        paint::glow(
+            p,
+            rect,
+            CornerRadius::same(12),
+            theme::alpha(color, glow),
+            8.0,
+        );
+    }
     let fill = theme::lerp_color(
         theme::alpha(color, 0.10 + 0.06 * hover),
         theme::alpha(color, 0.28),
@@ -310,28 +422,43 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32, selected: bool) -> Response
         Stroke::new(1.0, theme::alpha(color, 0.35 + 0.5 * on.max(hover))),
         StrokeKind::Inside,
     );
-    p.circle_filled(pos2(rect.left() + 11.0, rect.center().y), 3.0, color);
+    paint::glass_sheen(p, rect, CornerRadius::same(12), 0.3 * hover);
+    paint::ripple(p, &resp, rect, color);
+    p.circle_filled(
+        pos2(rect.left() + 11.0, rect.center().y),
+        3.0 + 0.6 * hover,
+        color,
+    );
     p.galley(
         pos2(rect.left() + 18.0, rect.center().y - galley.size().y / 2.0),
         galley,
         theme::lerp_color(theme::TEXT, Color32::WHITE, on),
     );
+    paint::focus(p, &resp, rect, CornerRadius::same(12));
     resp
 }
 
-/// iOS-style switch.
+/// Switch with a springy knob that stretches while it travels.
 pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(40.0, 22.0), Sense::click());
+    toggle_labeled(ui, on, "")
+}
+
+/// [`toggle`] with an accessible name.
+pub fn toggle_labeled(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
-    resp.widget_info(|| WidgetInfo::selected(Role::Switch, true, *on, ""));
-    let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.16);
+    resp.widget_info(|| WidgetInfo::selected(Role::Switch, true, *on, label));
+    let ctx = ui.ctx();
+    let t = ctx.animate_bool_with_time(resp.id, *on, motion::BASE);
+    let hover = ctx.animate_bool_with_time(resp.id.with("h"), resp.hovered(), motion::FAST);
+    let k = motion::bouncy(ctx, resp.id.with("knob"), if *on { 1.0 } else { 0.0 });
     let p = ui.painter();
-    let r = CornerRadius::same(11);
+    let r = CornerRadius::same(12);
     if t > 0.0 {
-        paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.35 * t), 8.0);
+        paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.4 * t), 10.0);
         paint::gradient_rect(
             p,
             rect,
@@ -345,11 +472,32 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
         rect,
         r,
         theme::alpha(theme::CARD_HI, 1.0 - t),
-        Stroke::new(1.0, theme::alpha(theme::STROKE_HI, 1.0 - t)),
+        Stroke::new(
+            1.0,
+            theme::alpha(
+                theme::lerp_color(theme::STROKE_HI, theme::VIOLET, hover),
+                1.0 - t,
+            ),
+        ),
         StrokeKind::Inside,
     );
-    let x = egui::lerp(rect.left() + 11.0..=rect.right() - 11.0, paint::ease_out(t));
-    p.circle_filled(pos2(x, rect.center().y), 8.0, Color32::WHITE);
+    paint::glass_sheen(p, rect, r, 0.5);
+    let x = egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, k);
+    // Stretch along the direction of travel while moving.
+    let speed = (k - t).abs().min(0.5);
+    let knob = Rect::from_center_size(
+        pos2(x, rect.center().y),
+        vec2(18.0 + 10.0 * speed + 1.5 * hover, 18.0 + 1.5 * hover),
+    );
+    paint::glow(
+        p,
+        knob.translate(vec2(0.0, 1.5)),
+        CornerRadius::same(9),
+        Color32::from_black_alpha(90),
+        5.0,
+    );
+    p.rect_filled(knob, CornerRadius::same(10), Color32::WHITE);
+    paint::focus(p, &resp, rect, r);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -390,9 +538,8 @@ pub fn segmented<T: PartialEq + Copy>(
     }
     // Sliding highlight.
     let ctx = ui.ctx().clone();
-    let sel_x = ctx.animate_value_with_time(ui.scope_id().with(id).with("x"), xs[sel_idx], 0.18);
-    let sel_w =
-        ctx.animate_value_with_time(ui.scope_id().with(id).with("w"), widths[sel_idx], 0.18);
+    let sel_x = motion::smooth(&ctx, ui.scope_id().with(id).with("x"), xs[sel_idx]);
+    let sel_w = motion::smooth(&ctx, ui.scope_id().with(id).with("w"), widths[sel_idx]);
     let hl = Rect::from_min_size(
         pos2(sel_x, rect.top() + 3.0),
         vec2(sel_w, rect.height() - 6.0),
@@ -405,6 +552,7 @@ pub fn segmented<T: PartialEq + Copy>(
         10.0,
     );
     paint::gradient_rect(&p, hl, CornerRadius::same(8), 0.15, 0.85, Color32::WHITE);
+    paint::glass_sheen(&p, hl, CornerRadius::same(8), 0.8);
     let mut changed = false;
     for (i, ((v, label), w)) in options.iter().zip(&widths).enumerate() {
         let r = Rect::from_min_size(pos2(xs[i], rect.top()), vec2(*w, rect.height()));
@@ -416,12 +564,31 @@ pub fn segmented<T: PartialEq + Copy>(
             changed = true;
         }
         let selected = i == sel_idx;
+        // Unselected options light up a soft pill under the pointer.
+        let h = ctx.animate_bool_with_time(
+            resp.id.with("h"),
+            resp.hovered() && !selected,
+            motion::FAST,
+        );
+        if h > 0.0 {
+            let pill = r.shrink2(vec2(3.0, 3.0));
+            p.rect_filled(
+                pill,
+                CornerRadius::same(8),
+                Color32::from_white_alpha((14.0 * h) as u8),
+            );
+            p.rect_stroke(
+                pill,
+                CornerRadius::same(8),
+                Stroke::new(1.0, theme::alpha(theme::VIOLET, 0.35 * h)),
+                StrokeKind::Inside,
+            );
+        }
+        paint::ripple(&p, &resp, r.shrink(3.0), theme::VIOLET);
         let color = if selected {
             Color32::WHITE
-        } else if resp.hovered() {
-            theme::TEXT
         } else {
-            theme::TEXT_DIM
+            theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, h)
         };
         p.text(
             r.center(),
@@ -430,6 +597,7 @@ pub fn segmented<T: PartialEq + Copy>(
             font.clone(),
             color,
         );
+        paint::focus(&p, &resp, r.shrink(3.0), CornerRadius::same(8));
     }
     changed
 }
@@ -453,6 +621,16 @@ pub fn slider(
         let v = (lo + f * (hi - lo)).round();
         if v != *value {
             *value = v;
+            changed = true;
+        }
+    }
+    // Keyboard: arrows nudge by one step when focused.
+    if resp.has_focus() {
+        let d = ui.input(|i| {
+            i.num_presses(egui::Key::ArrowRight) as f32 - i.num_presses(egui::Key::ArrowLeft) as f32
+        });
+        if d != 0.0 {
+            *value = (*value + d).clamp(lo, hi);
             changed = true;
         }
     }
@@ -485,6 +663,13 @@ pub fn slider(
         10.0,
     );
     p.circle_filled(pos2(kx, track.center().y), 8.0 + 1.5 * h, Color32::WHITE);
+    if resp.has_focus() {
+        paint::focus_ring(
+            p,
+            Rect::from_center_size(pos2(kx, track.center().y), vec2(16.0, 16.0)),
+            CornerRadius::same(8),
+        );
+    }
     let _ = ui.label(
         egui::RichText::new(format!("{:.0}{suffix}", *value))
             .font(theme::mono(13.0))

@@ -3,6 +3,7 @@
 //! * [`registry`] lists the models we know how to run and where to download them.
 //! * [`ModelManager`] downloads/caches model files and the ONNX Runtime library.
 //! * [`load`] builds a [`Separator`] for a downloaded model on a [`Device`].
+//! * [`transcribe`] turns audio into MIDI notes (Spotify Basic Pitch) and writes `.mid` files.
 //!
 //! Module map:
 //!
@@ -17,7 +18,12 @@
 //! | `dsp`       | windows, overlap-add, stereo / rate helpers |
 //! | `mdx`       | UVR MDX-Net separator |
 //! | `demucs`    | HTDemucs (STFT outside the graph) separator |
+//! | `roformer`  | complex-spectrogram separators: Mel-/BS-RoFormer, SCNet and MDX23C (STFT outside the graph) |
+//! | `mdx23c`    | MDX23C (TFC-TDF v3) geometry and export contract: drum parts, de-reverb |
+//! | `basic_pitch` | audio -> note posteriorgrams -> notes (Basic Pitch port), behind [`transcribe`] |
+//! | `midi_file` | notes -> Standard MIDI File, quantisation, behind [`transcribe`] |
 
+mod basic_pitch;
 mod catalog;
 mod demucs;
 mod devices;
@@ -25,7 +31,10 @@ mod download;
 mod dsp;
 mod manager;
 mod mdx;
+mod mdx23c;
+mod midi_file;
 mod network;
+mod roformer;
 mod runtime;
 
 use std::path::{Path, PathBuf};
@@ -35,7 +44,23 @@ use stem_audio::AudioBuffer;
 
 pub use catalog::{find_model, registry};
 pub use devices::{GpuAdapter, gpu_adapters, list_devices};
+pub use download::DownloadStatus;
 pub use runtime::{DIRECTML_VERSION, ORT_VERSION};
+
+/// Audio to MIDI: [`transcribe::BasicPitch`] runs the model, [`transcribe::notes`] turns its
+/// posteriorgrams into notes (cheap, so re-run it whenever a threshold changes), and
+/// [`transcribe::write_midi`] / [`transcribe::quantize`] make the `.mid` file. The model file
+/// comes from [`ModelManager::download_transcriber`] with [`transcribe::BASIC_PITCH`].
+pub mod transcribe {
+    pub use crate::basic_pitch::{
+        ANNOTATIONS_FPS, BASIC_PITCH, BasicPitch, FFT_HOP, FrameNote, MIDI_OFFSET, N_CONTOUR_BINS,
+        N_NOTES, Note, NoteOptions, Posteriorgrams, SAMPLE_RATE, TranscriberInfo, frame_times,
+        model_input, notes, notes_in_frames,
+    };
+    pub use crate::midi_file::{
+        Beats, MidiOptions, PPQ, Quantize, QuantizeGrid, quantize, seconds_to_ticks, write_midi,
+    };
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
@@ -70,6 +95,21 @@ pub enum StemKind {
     /// What a karaoke model leaves after removing the lead vocal: the backing vocals, plus the
     /// instrumental when it was fed a full mix rather than a vocal stem.
     BackingVocals,
+    /// Drum parts, from drum separation models run on a drums stem.
+    Kick,
+    Snare,
+    Toms,
+    HiHat,
+    Ride,
+    Crash,
+    /// A vocal (or any source) with the reverb and echo taken out, from de-reverb models.
+    Dry,
+    /// What a de-reverb / de-echo model removed: the reverb tail and echoes.
+    Reverb,
+    /// A source with the noise taken out, from denoise models.
+    Clean,
+    /// What a denoise model removed.
+    Noise,
 }
 
 impl StemKind {
@@ -87,7 +127,32 @@ impl StemKind {
             StemKind::Effects => "Effects",
             StemKind::LeadVocals => "Lead vocals",
             StemKind::BackingVocals => "Backing vocals",
+            StemKind::Kick => "Kick",
+            StemKind::Snare => "Snare",
+            StemKind::Toms => "Toms",
+            StemKind::HiHat => "Hi-hat",
+            StemKind::Ride => "Ride",
+            StemKind::Crash => "Crash",
+            StemKind::Dry => "Dry",
+            StemKind::Reverb => "Reverb",
+            StemKind::Clean => "Clean",
+            StemKind::Noise => "Noise",
         }
+    }
+
+    /// The pieces of a drum kit that drum separation models output.
+    pub const DRUM_PARTS: [StemKind; 6] = [
+        StemKind::Kick,
+        StemKind::Snare,
+        StemKind::Toms,
+        StemKind::HiHat,
+        StemKind::Ride,
+        StemKind::Crash,
+    ];
+
+    /// One of [`StemKind::DRUM_PARTS`].
+    pub fn is_drum_part(self) -> bool {
+        Self::DRUM_PARTS.contains(&self)
     }
 }
 
@@ -110,6 +175,42 @@ pub enum ModelArch {
     /// See `tools/export_htdemucs_onnx.py`. `ModelInfo::stems` lists the sources in the
     /// network's output order.
     HtDemucs { segment_samples: usize },
+    /// Mel-Band / BS-RoFormer exported with the STFT outside the graph (audiojs/mel-roformer,
+    /// silverdaw/bs-roformer-rhythm-onnx contracts; see `roformer.rs`): periodic Hann window,
+    /// unnormalised, centred reflect STFT; segments of `segment_samples` overlap-added as
+    /// Music-Source-Separation-Training's `demix()` does. `overlap` is the default fraction of
+    /// a segment shared with the next (`1 - 1/num_overlap`), overridable by
+    /// [`LoadOptions::overlap`]. `ModelInfo::stems` lists the network's sources in output
+    /// order, plus optionally one last stem computed as `mix - sum(predicted)`.
+    RoFormer {
+        n_fft: usize,
+        hop: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
+    /// SCNet exported with the STFT outside the graph (audiojs/scnet contract, same I/O as
+    /// [`ModelArch::RoFormer`]'s `mix_spec` graphs): rectangular window, `normalized=True`
+    /// STFT, input standardised by its mono mean/std, segments padded as `SCNet.forward` pads
+    /// them.
+    Scnet {
+        n_fft: usize,
+        hop: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
+    /// MDX23C (TFC-TDF v3, ZFTurbo's Music-Source-Separation-Training) exported with the STFT
+    /// outside the graph (`tools/export_mdx23c_onnx.py`, see `mdx23c.rs`): the RoFormer STFT and
+    /// `demix()` chunking, but the graph sees only the lowest `dim_f` bins (`mix_spec
+    /// [1, 4, dim_f, T]` -> `stems_spec [1, S, 4, dim_f, T]`) and the bins above are zero
+    /// coming out. `segment_samples` is the config's `chunk_size`; `overlap` is
+    /// `1 - 1/num_overlap`.
+    Mdx23c {
+        n_fft: usize,
+        hop: usize,
+        dim_f: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -127,12 +228,41 @@ pub struct ModelInfo {
     pub sha256: Option<&'static str>,
     pub size_bytes: u64,
     pub license: &'static str,
+    /// The weights are under a non-commercial licence (CC BY-NC and the like) or under no
+    /// stated licence at all: offered as a "personal use" extra, downloaded only when picked.
+    #[serde(default)]
+    pub non_commercial: bool,
 }
 
 impl ModelInfo {
     /// File name under `<root>/models/` (the last path segment of [`ModelInfo::url`]).
     pub fn file_name(&self) -> &'static str {
         self.url.rsplit('/').next().unwrap_or(self.id)
+    }
+
+    /// True when [`ModelInfo::url`] is not hosted yet and the file has to be exported by hand
+    /// (see `tools/`) and dropped into the models folder.
+    pub fn needs_manual_export(&self) -> bool {
+        self.url.starts_with(catalog::UNHOSTED_URL_PREFIX)
+    }
+
+    /// A short note for the UI about how this model behaves on the GPU / CPU, if worth saying.
+    pub fn device_note(&self) -> Option<&'static str> {
+        match self.arch {
+            ModelArch::RoFormer { .. } => Some(
+                "Large transformer: runs one 8 s segment at a time and needs over 1 GB \
+                 of GPU memory on DirectML. On the CPU expect several minutes per song.",
+            ),
+            ModelArch::Scnet { .. } => Some(
+                "Small int8 model: quick on DirectML and still usable on the CPU, so pick the \
+                 CPU if the GPU gives trouble.",
+            ),
+            ModelArch::Mdx23c { .. } => Some(
+                "Convolutional U-Net: about 1 GB of GPU memory on DirectML. On the CPU a \
+                 three-minute stem takes a few minutes.",
+            ),
+            ModelArch::HtDemucs { .. } | ModelArch::MdxNet { .. } => None,
+        }
     }
 }
 
@@ -188,7 +318,8 @@ pub struct LoadOptions {
     /// Clamped to `[0, 0.95]`.
     pub overlap: Option<f32>,
     /// Chunks per inference call. Default: 2 on DirectML, 1 on CPU (CPU gains nothing from
-    /// batching). Only used when the graph has a dynamic batch dimension.
+    /// batching). Only used when the graph has a dynamic batch dimension. RoFormer / SCNet
+    /// always run one segment at a time.
     pub batch_size: Option<usize>,
     /// ONNX Runtime intra-op threads for CPU runs (default: ORT's choice, all physical cores).
     pub cpu_threads: Option<usize>,
@@ -200,7 +331,87 @@ pub fn load(info: &ModelInfo, model_path: &Path, device: Device) -> Result<Box<d
 }
 
 /// [`load`] with explicit [`LoadOptions`].
+///
+/// On a GPU, a separation that runs out of video memory (common on iGPUs with a few hundred MB
+/// of dedicated memory) is retried on the CPU instead of failing.
 pub fn load_with(
+    info: &ModelInfo,
+    model_path: &Path,
+    device: Device,
+    options: &LoadOptions,
+) -> Result<Box<dyn Separator>> {
+    let inner = load_on(info, model_path, device, options)?;
+    if inner.active_device() == Device::Cpu {
+        return Ok(inner);
+    }
+    Ok(Box::new(OomFallback {
+        inner,
+        model_path: model_path.to_path_buf(),
+        options: options.clone(),
+    }))
+}
+
+/// True for ONNX Runtime / DirectML errors that mean the device ran out of memory.
+pub fn is_out_of_memory(err: &ModelError) -> bool {
+    let ModelError::Runtime(msg) = err else {
+        return false;
+    };
+    let m = msg.to_ascii_lowercase();
+    m.contains("8007000e")
+        || m.contains("not enough memory")
+        || m.contains("out of memory")
+        || m.contains("e_outofmemory")
+        || m.contains("bad_alloc")
+}
+
+/// True when every sample of every stem is a finite number.
+pub fn all_finite(stems: &[(StemKind, AudioBuffer)]) -> bool {
+    stems
+        .iter()
+        .all(|(_, b)| b.channels.iter().all(|c| c.iter().all(|v| v.is_finite())))
+}
+
+/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU runs out of memory
+/// or returns non-finite output.
+struct OomFallback {
+    inner: Box<dyn Separator>,
+    model_path: PathBuf,
+    options: LoadOptions,
+}
+
+impl Separator for OomFallback {
+    fn info(&self) -> &ModelInfo {
+        self.inner.info()
+    }
+
+    fn separate(
+        &mut self,
+        mix: &AudioBuffer,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<(StemKind, AudioBuffer)>> {
+        let on_gpu = self.inner.active_device() != Device::Cpu;
+        let why = match self.inner.separate(mix, progress, cancel) {
+            Err(e) if on_gpu && is_out_of_memory(&e) => format!("GPU ran out of memory ({e})"),
+            // DirectML has operator bugs on some shapes (e.g. InstanceNormalization in MDX23C
+            // on RDNA2) that yield NaN with no error; never hand silent garbage to the user.
+            Ok(stems) if on_gpu && !all_finite(&stems) => {
+                "GPU output contained NaN/Inf (DirectML operator bug)".to_owned()
+            }
+            r => return r,
+        };
+        tracing::warn!("{why}; retrying on the CPU");
+        let info = self.inner.info().clone();
+        self.inner = load_on(&info, &self.model_path, Device::Cpu, &self.options)?;
+        self.inner.separate(mix, progress, cancel)
+    }
+
+    fn active_device(&self) -> Device {
+        self.inner.active_device()
+    }
+}
+
+fn load_on(
     info: &ModelInfo,
     model_path: &Path,
     device: Device,
@@ -212,10 +423,14 @@ pub fn load_with(
             format!("model file not found: {}", model_path.display()),
         )));
     }
-    let batch_hint = options.batch_size.unwrap_or(match device {
-        Device::Cpu => 1,
-        _ => 2,
-    });
+    let batch_hint = match info.arch {
+        // Big fixed-batch-1 graphs: one segment per call, also on DirectML.
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } | ModelArch::Mdx23c { .. } => 1,
+        _ => options.batch_size.unwrap_or(match device {
+            Device::Cpu => 1,
+            _ => 2,
+        }),
+    };
     let session = runtime::build_session(model_path, device, options, batch_hint)?;
     match &info.arch {
         ModelArch::MdxNet { .. } => Ok(Box::new(mdx::MdxSeparator::new(
@@ -228,5 +443,42 @@ pub fn load_with(
             Box::new(session),
             options,
         )?)),
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } | ModelArch::Mdx23c { .. } => {
+            Ok(Box::new(roformer::SpecSeparator::new(
+                info.clone(),
+                Box::new(session),
+                options,
+            )?))
+        }
+    }
+}
+
+#[cfg(test)]
+mod oom_tests {
+    use super::*;
+
+    #[test]
+    fn out_of_memory_errors_are_recognised() {
+        let rt = |m: &str| ModelError::Runtime(m.into());
+        assert!(is_out_of_memory(&rt(
+            "Non-zero status code returned while running Gemm node. 8007000E Not enough memory resources"
+        )));
+        assert!(is_out_of_memory(&rt("std::bad_alloc")));
+        assert!(!is_out_of_memory(&rt("invalid input shape")));
+        assert!(!is_out_of_memory(&ModelError::Cancelled));
+    }
+
+    #[test]
+    fn non_finite_output_is_detected() {
+        let buf = |v: f32| AudioBuffer {
+            sample_rate: 44_100,
+            channels: vec![vec![0.1, v], vec![0.0, 0.0]],
+        };
+        assert!(all_finite(&[(StemKind::Drums, buf(0.5))]));
+        assert!(!all_finite(&[
+            (StemKind::Drums, buf(0.5)),
+            (StemKind::Bass, buf(f32::NAN))
+        ]));
+        assert!(!all_finite(&[(StemKind::Drums, buf(f32::INFINITY))]));
     }
 }

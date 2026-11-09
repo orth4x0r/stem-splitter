@@ -6,7 +6,8 @@ use eframe::egui::{
 
 use crate::app::StemApp;
 use crate::backend::human_bytes;
-use crate::theme;
+use crate::pipeline::refine::RefineOp;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::{overline, page_title, paint, progress};
@@ -19,6 +20,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     );
     device_picker(app, ui);
     ui.add_space(22.0);
+    super::presets::section(app, ui);
+    ui.add_space(10.0);
     overline(ui, "Separation models");
     ui.add_space(6.0);
 
@@ -37,7 +40,44 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let selected = app
         .backend
         .model(app.settings.model_id.as_deref())
-        .map(|m| m.id);
+        .map(|m| m.id)
+        .filter(|_| app.settings.active_preset().is_none());
+    // Drum-part and clean-up models run on a stem, not the mix: they get their own group.
+    let (extras, main): (Vec<_>, Vec<_>) =
+        models.into_iter().partition(|m| RefineOp::of(m).is_some());
+    cards(app, ui, &main, selected, false);
+    if !extras.is_empty() {
+        ui.add_space(14.0);
+        overline(ui, "Drum parts & vocal clean-up  ·  personal use");
+        // Legend: the badge these cards carry, and what it means.
+        ui.horizontal(|ui| {
+            let w = super::refine::nc_badge_width(ui.painter(), 10.5);
+            let (r, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+            super::refine::nc_badge(ui.painter(), r.left(), r.center().y, 10.5);
+            ui.label(
+                egui::RichText::new(
+                    "Non-commercial or no stated licence: fine for your own beats, check before \
+                     releasing. Run them from a Drums or Vocals card (Split / Clean) or as a chain step.",
+                )
+                .font(theme::regular(12.5))
+                .color(theme::TEXT_DIM),
+            )
+            .on_hover_text(super::refine::NC_TIP);
+        });
+        ui.add_space(8.0);
+        cards(app, ui, &extras, None, true);
+    }
+}
+
+/// One grid of model cards. `extras` = stem refiners: clicking doesn't make them the split
+/// model, they're used from stem cards and chains.
+fn cards(
+    app: &mut StemApp,
+    ui: &mut egui::Ui,
+    models: &[stem_models::ModelInfo],
+    selected: Option<&str>,
+    extras: bool,
+) {
     let t = ui.input(|i| i.time);
     let gap = 16.0;
     let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
@@ -50,50 +90,87 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 let (rect, resp) = ui.allocate_exact_size(vec2(cw, ch), Sense::click());
                 let resp = resp
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(format!("License: {}", m.license));
+                    .on_hover_text(if m.non_commercial {
+                        format!("License: {}\n{}", m.license, super::refine::NC_TIP)
+                    } else {
+                        format!("License: {}", m.license)
+                    });
                 let sel = selected == Some(m.id);
                 let h = ui
                     .ctx()
                     .animate_bool_with_time(resp.id, resp.hovered(), 0.15);
                 let s = ui.ctx().animate_bool_with_time(resp.id.with("s"), sel, 0.2);
-                let downloading = app.model_downloads.get(m.id).copied();
+                let downloading = app.model_downloads.get(m.id).map(|d| d.status);
+                let partial = if downloading.is_none() && !app.backend.is_downloaded(m.id) {
+                    app.backend.manager().partial_bytes(m)
+                } else {
+                    0
+                };
                 let ready = app.backend.is_downloaded(m.id);
                 let soon = app.backend.needs_manual_export(m);
-                let rect = rect.translate(vec2(0.0, -2.0 * h));
+                let idx = models.iter().position(|x| x.id == m.id).unwrap_or(0);
+                let enter = motion::ease_out_back(motion::appear(
+                    ui.ctx(),
+                    resp.id.with("in"),
+                    0.06 + idx as f32 * motion::STAGGER,
+                    motion::ENTER,
+                ));
+                let lift = motion::bouncy(
+                    ui.ctx(),
+                    resp.id.with("lift"),
+                    if resp.hovered() { -4.0 } else { 0.0 },
+                );
+                let rect = rect.translate(vec2(0.0, lift + 22.0 * (1.0 - enter)));
                 {
                     let p = ui.painter();
-                    paint::glow(
-                        p,
-                        rect.translate(vec2(0.0, 8.0)),
-                        CornerRadius::same(18),
-                        Color32::from_black_alpha(90),
-                        26.0,
-                    );
+                    let rr = CornerRadius::same(18);
                     if s > 0.0 {
                         paint::glow(
                             p,
-                            rect,
-                            CornerRadius::same(18),
-                            theme::alpha(theme::VIOLET, 0.35 * s),
-                            20.0,
+                            rect.translate(vec2(0.0, 10.0)),
+                            rr,
+                            Color32::from_black_alpha(120),
+                            30.0,
                         );
+                        paint::glow(p, rect, rr, theme::alpha(theme::VIOLET, 0.4 * s), 24.0);
+                        let u = (t * 0.05) as f32;
                         paint::gradient_rect(
                             p,
                             rect,
-                            CornerRadius::same(18),
-                            0.0,
-                            1.0,
+                            rr,
+                            u,
+                            u + 1.0,
                             Color32::from_white_alpha((255.0 * s) as u8),
                         );
+                        p.rect_filled(
+                            rect.shrink(1.5 * s),
+                            CornerRadius::same(17),
+                            theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
+                        );
+                        paint::glass_sheen(p, rect.shrink(1.5), CornerRadius::same(17), 0.6 + h);
+                    } else {
+                        paint::glass(p, rect, rr, None, h);
                     }
+                    // Stem-coloured wash behind the card's top band.
+                    if let Some(k) = m.stems.first() {
+                        paint::soft_disc(
+                            &p.with_clip_rect(rect.shrink(2.0).intersect(p.clip_rect())),
+                            pos2(rect.left() + 60.0, rect.top()),
+                            150.0,
+                            theme::alpha(theme::stem_color(*k), 0.08 + 0.06 * h),
+                        );
+                    }
+                    if let Some(ptr) = resp.hover_pos() {
+                        paint::spotlight(p, rect, ptr, theme::VIOLET, h);
+                    }
+                    let sweep =
+                        ui.ctx()
+                            .animate_bool_with_time(resp.id.with("sweep"), resp.hovered(), 0.7);
+                    if resp.hovered() {
+                        paint::shine(p, rect, sweep, 1.0);
+                    }
+                    paint::focus(p, &resp, rect, rr);
                     let inner = rect.shrink(1.5 * s);
-                    p.rect(
-                        inner,
-                        CornerRadius::same(17),
-                        theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), h),
-                        Stroke::new(1.0, theme::alpha(theme::STROKE_HI, 1.0 - s)),
-                        StrokeKind::Inside,
-                    );
 
                     // Stem colour band across the top.
                     let band = Rect::from_min_size(
@@ -109,7 +186,17 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         p.rect_filled(seg, CornerRadius::same(2), theme::stem_color(*k));
                     }
 
-                    p.text(
+                    // The name stops short of the NC badge (long names would run under it).
+                    let name_right = if m.non_commercial {
+                        inner.right() - 28.0 - super::refine::nc_badge_width(p, 10.5)
+                    } else {
+                        inner.right() - 20.0
+                    };
+                    p.with_clip_rect(p.clip_rect().intersect(Rect::from_x_y_ranges(
+                        inner.left()..=name_right,
+                        inner.y_range(),
+                    )))
+                    .text(
                         pos2(inner.left() + 20.0, inner.top() + 46.0),
                         Align2::LEFT_CENTER,
                         m.name,
@@ -150,6 +237,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             Color32::WHITE,
                         );
                     }
+                    if m.non_commercial {
+                        let w = super::refine::nc_badge_width(p, 10.5);
+                        super::refine::nc_badge(
+                            p,
+                            inner.right() - 20.0 - w,
+                            inner.top() + 46.0,
+                            10.5,
+                        );
+                    }
                     // Description: up to two wrapped lines, cut with an ellipsis.
                     let mut job = egui::text::LayoutJob::simple(
                         m.description.to_owned(),
@@ -179,40 +275,46 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     pos2(rect.right() - 20.0, rect.bottom() - 18.0),
                 );
                 let p = ui.painter().clone();
-                if let Some(frac) = downloading {
+                if let Some(st) = downloading {
+                    let frac = st.fraction();
                     let bar = Rect::from_min_size(
                         pos2(foot.left(), foot.center().y + 4.0),
                         vec2(foot.width() - 60.0, 6.0),
                     );
                     progress::bar(&p, bar, frac, t);
-                    let label = frac.map_or("Downloading…".to_owned(), |f| {
-                        format!(
-                            "Downloading  {:.0}%  ·  {} of {}",
-                            f * 100.0,
-                            human_bytes((f as f64 * m.size_bytes as f64) as u64),
-                            human_bytes(m.size_bytes)
-                        )
-                    });
                     p.text(
                         pos2(foot.left(), foot.top() + 6.0),
                         Align2::LEFT_CENTER,
-                        label,
+                        crate::views::models_dl::label(&st, m.size_bytes),
                         theme::mono(11.5),
                         theme::TEXT_DIM,
                     );
-                    progress::ring(
-                        &p,
-                        pos2(foot.right() - 20.0, foot.center().y + 2.0),
-                        12.0,
-                        3.0,
-                        frac,
-                        t,
+                    let cr = Rect::from_center_size(
+                        pos2(foot.right() - 16.0, foot.center().y + 2.0),
+                        vec2(30.0, 30.0),
                     );
+                    let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cr));
+                    if buttons::icon_button(
+                        &mut cu,
+                        Icon::Close,
+                        30.0,
+                        false,
+                        theme::BAD,
+                        "Pause download (resumes where it left off)",
+                    )
+                    .clicked()
+                    {
+                        app.cancel_model_download(m.id);
+                    }
                 } else {
                     let (dot, status) = if ready {
                         (theme::GOOD, "Installed")
+                    } else if soon && extras {
+                        (theme::WARN, "Not hosted · export it with the tools/ script")
                     } else if soon {
                         (theme::WARN, "Coming soon · needs a manual ONNX export")
+                    } else if partial > 0 {
+                        (theme::WARN, "Paused")
                     } else {
                         (theme::TEXT_FAINT, "Not downloaded")
                     };
@@ -226,9 +328,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     );
                     // Size and a short license tag; the full license is in the tooltip.
                     let short_license = m.license.split([' ', '(']).next().unwrap_or(m.license);
+                    let size = if partial > 0 {
+                        format!("{} of {}", human_bytes(partial), human_bytes(m.size_bytes))
+                    } else {
+                        human_bytes(m.size_bytes)
+                    };
                     let meta = format!(
                         "{}  ·  {}  ·  {:.1} kHz",
-                        human_bytes(m.size_bytes),
+                        size,
                         short_license,
                         m.sample_rate as f32 / 1000.0
                     );
@@ -251,7 +358,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     if soon {
                         // Nothing to click: see the model's description / tools/export script.
                     } else if !ready {
-                        if Button::new("Download")
+                        if Button::new(if partial > 0 { "Resume" } else { "Download" })
                             .icon(Icon::Download)
                             .height(32.0)
                             .show(&mut bu)
@@ -259,6 +366,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         {
                             app.download_model(m.id);
                         }
+                    } else if extras {
+                        // Picked from a stem card, not here.
                     } else if !sel
                         && Button::new("Use this")
                             .icon(Icon::Check)
@@ -266,11 +375,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             .show(&mut bu)
                             .clicked()
                     {
-                        app.settings.model_id = Some(m.id.to_owned());
+                        app.pick_model(m.id);
                     }
                 }
-                if resp.clicked() && !soon {
-                    app.settings.model_id = Some(m.id.to_owned());
+                if resp.clicked() && !soon && !extras {
+                    app.pick_model(m.id);
                 }
                 if soon {
                     // Dim the whole card.
