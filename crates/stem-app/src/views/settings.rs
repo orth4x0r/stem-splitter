@@ -193,7 +193,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     section(
         ui,
         "Storage",
-        "Models, yt-dlp and downloads live here.",
+        "Models, yt-dlp, downloads and cached model output live here.",
         |ui| {
             row(ui, "Data folder", |ui| {
                 let path = app.backend.paths.data.display().to_string();
@@ -221,6 +221,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 }
             });
             super::settings_tools::cache_row(app, ui);
+            super::presets::cache_rows(app, ui);
         },
     );
 

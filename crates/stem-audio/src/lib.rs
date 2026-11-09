@@ -5,6 +5,7 @@
 pub mod analysis;
 pub mod chop;
 mod encode;
+pub mod ensemble;
 pub mod oneshot;
 pub mod onsets;
 pub mod stft;

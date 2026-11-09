@@ -19,6 +19,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     );
     device_picker(app, ui);
     ui.add_space(22.0);
+    super::presets::section(app, ui);
+    ui.add_space(10.0);
     overline(ui, "Separation models");
     ui.add_space(6.0);
 
@@ -37,7 +39,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let selected = app
         .backend
         .model(app.settings.model_id.as_deref())
-        .map(|m| m.id);
+        .map(|m| m.id)
+        .filter(|_| app.settings.active_preset().is_none());
     let t = ui.input(|i| i.time);
     let gap = 16.0;
     let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
@@ -308,11 +311,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             .show(&mut bu)
                             .clicked()
                     {
-                        app.settings.model_id = Some(m.id.to_owned());
+                        app.pick_model(m.id);
                     }
                 }
                 if resp.clicked() && !soon {
-                    app.settings.model_id = Some(m.id.to_owned());
+                    app.pick_model(m.id);
                 }
                 if soon {
                     // Dim the whole card.

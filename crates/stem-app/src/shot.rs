@@ -9,6 +9,10 @@
 //! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
 //! More scenes: midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set `STEM_MIDI_MODEL=nmp.onnx`
 //! and `ORT_DYLIB_PATH` to run the real model instead of the demo stand-in).
+//! Presets and chains: presets (start screen with a chain preset picked), chains (preset cards
+//! on the Models page), preset-editor (editing a chain with an ensemble step), chain-progress
+//! (step 2 of a chain running), stem-cache (Settings with the stem cache rows; use a tall
+//! `STEM_SHOT_SIZE` to reach Storage).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -301,6 +305,9 @@ impl Shot {
                     );
                 }
             }
+            "presets" | "chains" | "preset-editor" | "chain-progress" | "stem-cache" => {
+                preset_scene(app, &self.scene);
+            }
             "library" => app.page = Page::Library,
             "settings" => app.page = Page::Settings,
             "error" => {
@@ -431,6 +438,71 @@ fn dsp_scene(app: &mut StemApp, scene: &str) {
                 audio: Arc::new(audio),
                 secs: t0.elapsed().as_secs_f64(),
             });
+        }
+    }
+}
+
+/// Presets and chains scenes: one user preset next to the built-ins, a chain picked.
+fn preset_scene(app: &mut StemApp, scene: &str) {
+    use crate::pipeline::chain::{Chain, Step, StepInput};
+    use crate::settings::Preset;
+    use stem_audio::ensemble::EnsembleMode;
+    let flip = Preset {
+        id: String::new(),
+        name: "Flip kit (6-stem)".into(),
+        description: "Vocal ensemble, then guitar and piano out of the beat for chops.".into(),
+        chain: Chain {
+            steps: vec![
+                Step {
+                    input: StepInput::Mix,
+                    models: vec!["mel-roformer-kim".into(), "mdx-kim-vocal-2".into()],
+                    ensemble: EnsembleMode::MaxSpec,
+                },
+                Step::new(StepInput::Stem(StemKind::Instrumental), "htdemucs-6s"),
+            ],
+        },
+    };
+    let id = app.settings.save_preset(flip);
+    app.settings.preset_id = Some("builtin:beatmaker-4".into());
+    match scene {
+        "presets" => {}
+        "chains" => app.page = Page::Models,
+        "preset-editor" => {
+            app.page = Page::Models;
+            app.settings.preset_id = Some(id.clone());
+            if let Some(preset) = app.settings.find_preset(&id) {
+                app.preset_editor = Some(crate::views::presets::PresetEditor {
+                    preset,
+                    existing: true,
+                });
+            }
+        }
+        "chain-progress" => {
+            let spec = app
+                .settings
+                .find_preset("builtin:beatmaker-4")
+                .and_then(|p| app.chain_spec(&p).ok());
+            app.job = Some(RunningJob {
+                id: 999,
+                source: InputSource::Url("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()),
+                title: "Midnight Drive (demo beat)".into(),
+                model_name: "Beatmaker 4-stem".into(),
+                stems: spec
+                    .and_then(|s| s.plan().ok())
+                    .map(|p| p.kinds())
+                    .unwrap_or_default(),
+                stage: Stage::Separating,
+                detail: "Step 2/2 · HTDemucs on instrumental".into(),
+                frac: Some(0.71),
+                started: -63.0,
+                cancel: Arc::new(AtomicBool::new(false)),
+                shown: Stage::Separating.overall(0.71),
+                reopening: false,
+            });
+        }
+        _ => {
+            app.page = Page::Settings;
+            app.stem_cache_size = Some(3_420_000_000);
         }
     }
 }

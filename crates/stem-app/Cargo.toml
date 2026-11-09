@@ -24,6 +24,8 @@ rodio = "0.23"
 rfd = "0.18"
 directories = "6"
 crossbeam-channel = "0.5"
+# Stem cache keys (input file hashes). Same version as stem-models.
+sha2 = "0.11"
 # Screenshot mode (STEM_SHOT) saves PNGs.
 image = { version = "0.25", default-features = false, features = ["png"] }
 

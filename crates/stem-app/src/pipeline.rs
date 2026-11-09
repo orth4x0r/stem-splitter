@@ -1,5 +1,11 @@
 //! Background work. Everything slow runs on worker threads and reports back through one
 //! channel of [`AppEvent`]s; the UI thread only polls it.
+//!
+//! Chains / presets (several models in a row, ensembles) and the stem cache live in the
+//! `chain` and `cache` submodules.
+
+pub mod cache;
+pub mod chain;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -108,6 +114,8 @@ pub struct JobRequest {
     pub cookies_from_browser: Option<String>,
     pub paths: AppPaths,
     pub demo: bool,
+    /// Run a preset's chain (through the stem cache) instead of the single `model`.
+    pub chain: Option<chain::ChainSpec>,
 }
 
 pub struct StemOut {
@@ -182,7 +190,10 @@ pub fn spawn_job(req: JobRequest, cancel: Arc<AtomicBool>, n: Notifier) {
             let id = req.id;
             let send = |ev| n.send(AppEvent::Job(id, ev));
             let result = guard("split", || {
-                if req.demo {
+                if let Some(spec) = &req.chain {
+                    // The range of a section split joins the cache key once jobs carry one.
+                    chain::run(&req, spec, None, &cancel, &send)
+                } else if req.demo {
                     run_demo(&req, &cancel, &send)
                 } else {
                     run_real(&req, &cancel, &send)
@@ -673,6 +684,7 @@ mod tests {
             cookies_from_browser: None,
             paths,
             demo: false,
+            chain: None,
         };
         let cancel = AtomicBool::new(false);
         let out = run_real(&req, &cancel, &|ev| {
