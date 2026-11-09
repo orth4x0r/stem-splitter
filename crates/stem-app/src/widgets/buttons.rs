@@ -5,6 +5,10 @@ use eframe::egui::{
     Vec2, WidgetInfo, pos2, vec2,
 };
 
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use super::icons::{self, Icon};
 use super::paint;
 use crate::theme::{self, motion};
@@ -21,6 +25,31 @@ pub enum Kind {
     Danger,
 }
 
+/// When the last export finished successfully (ms since [`clock`] started, 0 = never).
+static EXPORT_OK: AtomicU64 = AtomicU64::new(0);
+
+fn clock() -> f64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Record a successful export: Export buttons shimmer for a moment afterwards.
+pub fn export_succeeded() {
+    EXPORT_OK.store((clock() * 1000.0) as u64 + 1, Ordering::Relaxed);
+}
+
+/// Seconds since the last successful export, while the shimmer is still running.
+fn export_shimmer_age() -> Option<f32> {
+    let ms = EXPORT_OK.load(Ordering::Relaxed);
+    if ms == 0 {
+        return None;
+    }
+    let age = (clock() - (ms - 1) as f64 / 1000.0) as f32;
+    (age < SHIMMER_LEN).then_some(age)
+}
+
+const SHIMMER_LEN: f32 = 1.8;
+
 pub struct Button<'a> {
     label: &'a str,
     icon: Option<Icon>,
@@ -29,6 +58,7 @@ pub struct Button<'a> {
     min_width: f32,
     height: f32,
     tooltip: Option<&'a str>,
+    shimmer: bool,
 }
 
 impl<'a> Button<'a> {
@@ -41,6 +71,7 @@ impl<'a> Button<'a> {
             min_width: 0.0,
             height: 38.0,
             tooltip: None,
+            shimmer: false,
         }
     }
     pub fn primary(label: &'a str) -> Self {
@@ -71,6 +102,11 @@ impl<'a> Button<'a> {
     }
     pub fn tooltip(mut self, t: &'a str) -> Self {
         self.tooltip = Some(t);
+        self
+    }
+    /// An Export button: shimmers for a moment after any export succeeds.
+    pub fn export_shimmer(mut self) -> Self {
+        self.shimmer = true;
         self
     }
 
@@ -210,6 +246,29 @@ impl<'a> Button<'a> {
             }
         };
 
+        // Post-export celebration: a green glow pulse and two light sweeps.
+        if self.shimmer
+            && self.enabled
+            && let Some(age) = export_shimmer_age()
+        {
+            let f = age / SHIMMER_LEN;
+            let fade = (1.0 - f).powf(1.5);
+            paint::glow(p, rect, r, theme::alpha(theme::GOOD, 0.35 * fade), 16.0);
+            p.rect_stroke(
+                rect,
+                r,
+                Stroke::new(1.2, theme::alpha(theme::GOOD, 0.8 * fade)),
+                StrokeKind::Inside,
+            );
+            if !motion::reduced() {
+                for k in 0..2 {
+                    let t = (age - 0.25 * k as f32) / 0.8;
+                    paint::shine(p, rect, t, 3.0 * fade);
+                }
+            }
+            ctx.request_repaint();
+        }
+
         let x0 = rect.center().x - content_w / 2.0;
         if let Some(icon) = self.icon {
             let ir =
@@ -314,6 +373,7 @@ pub fn letter_toggle(
         Color32::from_rgb(14, 10, 22),
         on,
     );
+    paint::glass_sheen(p, rect, r, hover + 0.4 * on);
     paint::ripple(p, &resp, rect, color);
     let pop = motion::bouncy(ctx, resp.id.with("pop"), if active { 1.0 } else { 0.0 });
     let k = 1.0 + 0.25 * (pop - on).abs();
@@ -340,6 +400,16 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32, selected: bool) -> Response
     let hover = ctx.animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.12);
     let on = ctx.animate_bool_with_time(resp.id.with("s"), selected, 0.15);
     let p = ui.painter();
+    let glow = 0.22 * hover + 0.18 * on;
+    if glow > 0.0 {
+        paint::glow(
+            p,
+            rect,
+            CornerRadius::same(12),
+            theme::alpha(color, glow),
+            8.0,
+        );
+    }
     let fill = theme::lerp_color(
         theme::alpha(color, 0.10 + 0.06 * hover),
         theme::alpha(color, 0.28),
@@ -352,7 +422,13 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32, selected: bool) -> Response
         Stroke::new(1.0, theme::alpha(color, 0.35 + 0.5 * on.max(hover))),
         StrokeKind::Inside,
     );
-    p.circle_filled(pos2(rect.left() + 11.0, rect.center().y), 3.0, color);
+    paint::glass_sheen(p, rect, CornerRadius::same(12), 0.3 * hover);
+    paint::ripple(p, &resp, rect, color);
+    p.circle_filled(
+        pos2(rect.left() + 11.0, rect.center().y),
+        3.0 + 0.6 * hover,
+        color,
+    );
     p.galley(
         pos2(rect.left() + 18.0, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -476,6 +552,7 @@ pub fn segmented<T: PartialEq + Copy>(
         10.0,
     );
     paint::gradient_rect(&p, hl, CornerRadius::same(8), 0.15, 0.85, Color32::WHITE);
+    paint::glass_sheen(&p, hl, CornerRadius::same(8), 0.8);
     let mut changed = false;
     for (i, ((v, label), w)) in options.iter().zip(&widths).enumerate() {
         let r = Rect::from_min_size(pos2(xs[i], rect.top()), vec2(*w, rect.height()));
@@ -487,12 +564,31 @@ pub fn segmented<T: PartialEq + Copy>(
             changed = true;
         }
         let selected = i == sel_idx;
+        // Unselected options light up a soft pill under the pointer.
+        let h = ctx.animate_bool_with_time(
+            resp.id.with("h"),
+            resp.hovered() && !selected,
+            motion::FAST,
+        );
+        if h > 0.0 {
+            let pill = r.shrink2(vec2(3.0, 3.0));
+            p.rect_filled(
+                pill,
+                CornerRadius::same(8),
+                Color32::from_white_alpha((14.0 * h) as u8),
+            );
+            p.rect_stroke(
+                pill,
+                CornerRadius::same(8),
+                Stroke::new(1.0, theme::alpha(theme::VIOLET, 0.35 * h)),
+                StrokeKind::Inside,
+            );
+        }
+        paint::ripple(&p, &resp, r.shrink(3.0), theme::VIOLET);
         let color = if selected {
             Color32::WHITE
-        } else if resp.hovered() {
-            theme::TEXT
         } else {
-            theme::TEXT_DIM
+            theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, h)
         };
         p.text(
             r.center(),

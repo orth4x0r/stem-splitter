@@ -12,7 +12,7 @@ use crate::app::StemApp;
 use crate::backend::mmss_ms;
 use crate::chop::{ChopMode, GridChoice, PAD_KEYS, PADS};
 use crate::chop_export::{self, ChopExport};
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::drag_handle;
 use crate::widgets::icons::Icon;
@@ -22,6 +22,8 @@ use crate::widgets::paint;
 const PAD_CARD_W: f32 = 404.0;
 const GAP: f32 = 16.0;
 const TOOLBAR_H: f32 = 104.0;
+/// Extra toolbar height on narrow windows (a third row for the region picker).
+const NARROW_ROW: f32 = 46.0;
 const COLUMNS_H: f32 = 440.0;
 const EXPORT_H: f32 = 108.0;
 /// Pixels within which the pointer grabs a marker.
@@ -37,6 +39,8 @@ struct Intents {
     export: bool,
     open_folder: bool,
     toast: Option<(&'static str, &'static str)>,
+    /// Export button centre, for the micro-burst when the export finishes.
+    anchor: Option<egui::Pos2>,
 }
 
 pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
@@ -51,9 +55,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     keyboard(app, ui, &mut it);
 
     let full_w = ui.available_width();
+    // Narrow windows: the region picker gets a third toolbar row instead of colliding.
+    let toolbar_h = if full_w < 1080.0 {
+        TOOLBAR_H + NARROW_ROW
+    } else {
+        TOOLBAR_H
+    };
     let (area, _) =
-        ui.allocate_exact_size(vec2(full_w, TOOLBAR_H + GAP + COLUMNS_H), Sense::hover());
-    let toolbar = Rect::from_min_size(area.min, vec2(full_w, TOOLBAR_H));
+        ui.allocate_exact_size(vec2(full_w, toolbar_h + GAP + COLUMNS_H), Sense::hover());
+    let toolbar = Rect::from_min_size(area.min, vec2(full_w, toolbar_h));
     let cols_top = toolbar.bottom() + GAP;
     let left_w = full_w - PAD_CARD_W - GAP;
     let export = Rect::from_min_size(
@@ -66,10 +76,29 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     );
     let pads_rect = Rect::from_min_max(pos2(area.right() - PAD_CARD_W, cols_top), area.max);
 
-    toolbar_card(app, ui, toolbar, &mut it);
-    lane_card(app, ui, lane, now, &mut it);
-    export_card(app, ui, export, &mut it);
-    pads_card(app, ui, pads_rect, now, &mut it);
+    // Cards rise and fade in, staggered, when chop mode opens.
+    let ctx = ui.ctx().clone();
+    let staged = |ui: &mut egui::Ui, i: usize, rect: Rect| -> (egui::Ui, Rect) {
+        let e = motion::ease_out(motion::appear(
+            &ctx,
+            Id::unique(("chop-card-in", i)),
+            i as f32 * motion::STAGGER * 1.5,
+            motion::ENTER,
+        ));
+        let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(area));
+        if e < 1.0 {
+            cu.multiply_opacity(e);
+        }
+        (cu, rect.translate(vec2(0.0, 18.0 * (1.0 - e))))
+    };
+    let (mut cu, r) = staged(ui, 0, toolbar);
+    toolbar_card(app, &mut cu, r, &mut it);
+    let (mut cu, r) = staged(ui, 1, lane);
+    lane_card(app, &mut cu, r, now, &mut it);
+    let (mut cu, r) = staged(ui, 3, export);
+    export_card(app, &mut cu, r, &mut it);
+    let (mut cu, r) = staged(ui, 2, pads_rect);
+    pads_card(app, &mut cu, r, now, &mut it);
 
     ui.add_space(10.0);
     ui.label(
@@ -126,14 +155,24 @@ fn keyboard(app: &mut StemApp, ui: &egui::Ui, it: &mut Intents) {
 
 // ---- cards ---------------------------------------------------------------------------------
 
+/// A glass card with a faint rim in `accent` and a short accent light along the top edge
+/// (the same surface as the rest of the app).
 fn card(ui: &egui::Ui, rect: Rect, accent: Color32) {
     let p = ui.painter();
-    p.rect(
+    paint::glass(
+        p,
         rect,
-        CornerRadius::same(16),
-        theme::CARD,
-        Stroke::new(1.0, theme::lerp_color(theme::STROKE, accent, 0.18)),
-        StrokeKind::Inside,
+        CornerRadius::same(theme::R_CARD),
+        Some(theme::alpha(accent, 0.07)),
+        0.0,
+    );
+    let w = (rect.width() * 0.45).min(320.0);
+    paint::edge_light(
+        p,
+        rect,
+        Some(rect.left() + 20.0 + w / 2.0),
+        w,
+        theme::alpha(accent, 0.8),
     );
 }
 
@@ -167,6 +206,8 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
     let ui = &mut cui;
     ui.spacing_mut().item_spacing = vec2(8.0, 12.0);
     let has_grid = s.analysis.as_ref().is_some_and(|a| a.grid.is_some());
+    let narrow = rect.height() > TOOLBAR_H + 1.0;
+    let selection = s.selection;
     let chop = &mut s.chop;
     let mut changed = false;
     let mut retarget = false;
@@ -194,37 +235,12 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
         if buttons::segmented(ui, "chop-mode", &mut chop.settings.mode, &opts) {
             changed = true;
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut region = if chop.settings.region.is_some() {
-                RegionChoice::Selection
-            } else {
-                RegionChoice::Whole
-            };
-            if buttons::segmented(
-                ui,
-                "chop-region",
-                &mut region,
-                &[
-                    (RegionChoice::Whole, "Whole stem"),
-                    (RegionChoice::Selection, "Selection"),
-                ],
-            ) {
-                match region {
-                    RegionChoice::Whole => chop.settings.region = None,
-                    RegionChoice::Selection => match s.selection {
-                        Some(sel) => chop.settings.region = Some(sel),
-                        None => {
-                            it.toast = Some((
-                                "Select a region first",
-                                "Switch to Stems and drag across a waveform, then come back.",
-                            ))
-                        }
-                    },
-                }
-                retarget = true;
-            }
-            label(ui, "REGION");
-        });
+        if !narrow {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                retarget |= region_picker(ui, chop, selection, it);
+                label(ui, "REGION");
+            });
+        }
     });
     // Row 2: the mode's settings, slice count.
     ui.horizontal(|ui| {
@@ -291,11 +307,56 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
             }
         });
     });
+    if narrow {
+        ui.horizontal(|ui| {
+            ui.set_min_height(30.0);
+            label(ui, "REGION");
+            retarget |= region_picker(ui, chop, selection, it);
+        });
+    }
     if retarget {
         chop.retarget();
     } else if changed {
         chop.changed();
     }
+}
+
+/// Whole stem / Selection picker. True when the region changed (retarget the chop).
+fn region_picker(
+    ui: &mut egui::Ui,
+    chop: &mut crate::chop::ChopState,
+    selection: Option<(f64, f64)>,
+    it: &mut Intents,
+) -> bool {
+    let mut region = if chop.settings.region.is_some() {
+        RegionChoice::Selection
+    } else {
+        RegionChoice::Whole
+    };
+    if !buttons::segmented(
+        ui,
+        "chop-region",
+        &mut region,
+        &[
+            (RegionChoice::Whole, "Whole stem"),
+            (RegionChoice::Selection, "Selection"),
+        ],
+    ) {
+        return false;
+    }
+    match region {
+        RegionChoice::Whole => chop.settings.region = None,
+        RegionChoice::Selection => match selection {
+            Some(sel) => chop.settings.region = Some(sel),
+            None => {
+                it.toast = Some((
+                    "Select a region first",
+                    "Switch to Stems and drag across a waveform, then come back.",
+                ))
+            }
+        },
+    }
+    true
 }
 
 fn lane_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mut Intents) {
@@ -688,16 +749,17 @@ fn export_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Intent
     });
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        if Button::primary(if busy { "Exporting…" } else { "Export chops" })
+        let btn = Button::primary(if busy { "Exporting…" } else { "Export chops" })
+            .export_shimmer()
             .icon(Icon::Scissors)
             .enabled(n > 0 && !busy)
             .tooltip(
                 "Write every slice as a numbered file plus an SFZ kit (slice 1 on C1 / MIDI 36)",
             )
             .height(40.0)
-            .show(ui)
-            .clicked()
-        {
+            .show(ui);
+        it.anchor = Some(btn.rect.center());
+        if btn.clicked() {
             it.export = true;
         }
         let label_txt = if crate::dragout::NATIVE {
@@ -808,6 +870,17 @@ fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mu
     let base = page * PADS;
     let held = chop.held.clone();
     let linked = chop.hover;
+    // Pads pop in, staggered from pad 1, whenever the page, stem or chop mode changes.
+    let pop_key = (page, chop.track, chop.settings.mode.label());
+    let ctx = ui.ctx().clone();
+    let enter = |n: usize| {
+        motion::appear(
+            &ctx,
+            Id::unique(("pad-pop", pop_key, n)),
+            0.08 + n as f32 * 0.025,
+            0.34,
+        )
+    };
     let events = {
         let chop_ref = &*chop;
         pads::grid(ui, grid_rect, Id::unique("chop-pads"), now, |n| {
@@ -821,6 +894,7 @@ fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mu
                 held: held.contains(&i),
                 secs: chop_ref.pads.get(i).map_or(0.0, |p| p.duration_secs()),
                 linked: has && linked == Some(i),
+                enter: enter(n),
             }
         })
     };
@@ -874,6 +948,9 @@ fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mu
 fn apply(app: &mut StemApp, ui: &egui::Ui, it: Intents, now: f64) {
     if let Some((title, body)) = it.toast {
         app.toasts.info(title, body);
+    }
+    if let Some(a) = it.anchor {
+        app.fx.set_anchor("chop-export", a);
     }
     let shot = app.shot.is_some();
     let ctx = ui.ctx().clone();
@@ -962,10 +1039,15 @@ pub fn tick(app: &mut StemApp, now: f64) -> bool {
     {
         s.chop.export_rx = None;
         match res {
-            Ok((n, dir)) => app.toasts.success(
-                format!("{n} chops exported"),
-                format!("{}  ·  SFZ kit from C1", dir.display()),
-            ),
+            Ok((n, dir)) => {
+                crate::widgets::buttons::export_succeeded();
+                let colors = (0..n.clamp(1, 8)).map(slice_color).collect();
+                app.fx.sparkle_at("chop-export", colors);
+                app.toasts.success(
+                    format!("{n} chops exported"),
+                    format!("{}  ·  SFZ kit from C1", dir.display()),
+                )
+            }
             Err(e) => app.toasts.error("Chop export failed", e),
         }
     }

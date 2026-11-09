@@ -11,12 +11,13 @@ use stem_audio::oneshot::{HitClass, note_name};
 
 use crate::app::StemApp;
 use crate::fx::{self, KitState};
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::drag_handle::{self, PillAction};
 use crate::widgets::icons::{self, Icon};
+use crate::widgets::sheet::Sheet;
 use crate::widgets::toast::elide;
-use crate::widgets::{overline, paint, progress};
+use crate::widgets::{paint, progress};
 
 const TILE: egui::Vec2 = egui::vec2(172.0, 100.0);
 
@@ -48,6 +49,7 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
     let mut export = false;
     let mut drag: Option<PillAction> = None;
     let mut play: Option<usize> = None;
+    let mut anchor: Option<egui::Pos2> = None;
     let playing_tag = if app.dsp.audition.is_playing() {
         app.dsp.audition.tag.clone()
     } else {
@@ -60,17 +62,13 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
     let kind = sheet.kind;
     let busy_export = sheet.busy_export;
     let exported = sheet.exported.clone();
-    let resp = egui::Modal::new(Id::unique("kit-sheet"))
-        .frame(theme::card_frame().inner_margin(egui::Margin::same(24)))
-        .backdrop_color(Color32::from_black_alpha(150))
-        .show(ctx, |ui| {
+    let mut anim = Sheet::begin(ctx, Id::unique("kit-sheet"));
+    let resp = anim.show(ctx, theme::stem_color(kind), 24, |ui| {
             ui.set_width(860.0);
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
                 let c = theme::stem_color(kind);
-                paint::glow_circle(ui.painter(), r.center(), 18.0, theme::alpha(c, 0.25), 10.0);
-                ui.painter().circle_filled(r.center(), 20.0, theme::alpha(c, 0.18));
-                icons::paint(ui.painter(), r.shrink(10.0), Icon::Sparkle, c);
+                crate::widgets::icon_badge(ui.painter(), r, c, Icon::Sparkle);
                 ui.add_space(6.0);
                 ui.vertical(|ui| {
                     ui.label(
@@ -107,10 +105,10 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
             match &mut sheet.state {
                 KitState::Extracting(run) => {
                     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), Sense::hover());
-                    let bar = Rect::from_center_size(r.center(), vec2(r.width() * 0.6, 8.0));
-                    progress::bar(ui.painter(), bar, Some(run.frac()), now);
+                    let bar = Rect::from_center_size(r.center() + vec2(0.0, 14.0), vec2(r.width() * 0.6, 40.0));
+                    progress::live_bar(ui.painter(), bar, run.frac(), now, theme::stem_color(kind));
                     ui.painter().text(
-                        bar.center_top() - vec2(0.0, 16.0),
+                        bar.center_top() - vec2(0.0, 14.0),
                         Align2::CENTER_CENTER,
                         "Detecting onsets, cutting and grouping hits",
                         theme::regular(13.0),
@@ -139,8 +137,11 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                         );
                     }
                     let sr = kit.samples.first().map_or(44_100, |s| s.audio.sample_rate);
+                    // As tall as the window allows, so the footer always stays on screen.
+                    let list_h = (ui.ctx().content_rect().height() - 330.0).clamp(200.0, 520.0);
+                    let mut order = 0usize;
                     egui::ScrollArea::vertical()
-                        .max_height(470.0)
+                        .max_height(list_h)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             for class in HitClass::ALL {
@@ -151,24 +152,24 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                                     continue;
                                 }
                                 let hits = kit.hits.iter().filter(|h| h.class == class).count();
-                                ui.horizontal(|ui| {
-                                    let (r, _) = ui.allocate_exact_size(vec2(8.0, 14.0), Sense::hover());
-                                    ui.painter().circle_filled(r.center(), 3.5, class_color(class));
-                                    overline(
-                                        ui,
-                                        &format!("{}  ·  {} hits  ·  {} kept", class_title(class), hits, idx.len()),
-                                    );
-                                });
+                                class_header(
+                                    ui,
+                                    class_color(class),
+                                    class_title(class),
+                                    &format!("{hits} hits  ·  {} kept", idx.len()),
+                                );
                                 ui.add_space(4.0);
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
                                     for &i in &idx {
+                                        order += 1;
                                         let s = &kit.samples[i];
                                         let tag = format!("kit-{i}");
                                         let is_playing = playing_tag.as_deref() == Some(tag.as_str());
                                         let r = tile(
                                             ui,
                                             i,
+                                            order,
                                             &s.name,
                                             &format!(
                                                 "×{}  ·  {}  ·  {:.2} s",
@@ -224,13 +225,14 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if exported.is_some() { "Export again" } else { "Export kit" };
-                    if Button::primary(label)
+                    let btn = Button::primary(label)
+                        .export_shimmer()
                         .icon(Icon::Export)
                         .enabled(ready && n_checked > 0 && !busy_export)
                         .height(40.0)
-                        .show(ui)
-                        .clicked()
-                    {
+                        .show(ui);
+                    anchor = Some(btn.rect.center());
+                    if btn.clicked() {
                         export = true;
                     }
                     if ready && n_checked > 0 {
@@ -263,6 +265,13 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
     if resp.should_close() {
         close = true;
     }
+    if let Some(a) = anchor {
+        app.fx.set_anchor("kit-export", a);
+    }
+    if anim.closing {
+        // Exit animation playing: the sheet is going away, ignore its buttons.
+        (play, export, drag) = (None, false, None);
+    }
 
     if let Some(i) = play {
         let tag = format!("kit-{i}");
@@ -290,6 +299,9 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
         }
     }
     if close {
+        anim.close(ctx);
+    }
+    if anim.finished() {
         app.dsp.close_kit();
     }
 }
@@ -331,10 +343,13 @@ pub fn kit_button(ui: &mut egui::Ui, right: f32, cy: f32, i: usize, color: Color
 }
 
 /// One sample tile. Returns true when clicked (audition). `playing` = playback position.
+/// Tiles pop in staggered (`order` = position in the sheet), lift and catch the light on
+/// hover, and pulse in their class colour while they play.
 #[allow(clippy::too_many_arguments)]
 fn tile(
     ui: &mut egui::Ui,
     i: usize,
+    order: usize,
     name: &str,
     meta: &str,
     peaks: &[(f32, f32)],
@@ -342,55 +357,104 @@ fn tile(
     checked: &mut bool,
     playing: Option<f32>,
 ) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(TILE, Sense::click());
+    let (slot, resp) = ui.allocate_exact_size(TILE, Sense::click());
     let resp = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text("Click to audition");
-    let h = ui
-        .ctx()
-        .animate_bool_with_time(Id::unique(("kit-tile", i)), resp.hovered(), 0.12);
+    let ctx = ui.ctx().clone();
+    let enter = motion::appear(
+        &ctx,
+        Id::unique(("kit-tile-in", i)),
+        0.12 + order as f32 * 0.05,
+        0.38,
+    );
+    let pop = motion::ease_out_back(enter);
+    let h = ctx.animate_bool_with_time(Id::unique(("kit-tile", i)), resp.hovered(), 0.12);
+    let lift = 3.0 * h;
+    let rect = Rect::from_center_size(
+        slot.center() - vec2(0.0, lift - 10.0 * (1.0 - pop)),
+        TILE * (0.86 + 0.14 * pop),
+    );
     let on = *checked;
-    let p = ui.painter().clone();
+    let mut p = ui.painter().clone();
+    p.multiply_opacity(motion::ease_out(enter));
+    let r = CornerRadius::same(12);
+    let now = ui.input(|inp| inp.time);
+    // Playing: a slow breathing glow around the tile.
+    let breathe = if playing.is_some() && !motion::reduced() {
+        0.5 + 0.5 * (now * 6.0).sin() as f32
+    } else {
+        0.0
+    };
     if playing.is_some() {
         paint::glow(
             &p,
             rect,
-            CornerRadius::same(12),
-            theme::alpha(color, 0.3),
-            12.0,
+            r,
+            theme::alpha(color, 0.3 + 0.2 * breathe),
+            14.0 + 6.0 * breathe,
         );
     }
-    p.rect(
+    paint::glass(
+        &p,
         rect,
-        CornerRadius::same(12),
-        theme::lerp_color(
-            theme::CARD_HI,
-            theme::alpha(color, 0.10),
-            h * 0.6 + if playing.is_some() { 0.4 } else { 0.0 },
-        ),
+        r,
+        on.then_some(theme::alpha(color, 0.05 + 0.08 * h)),
+        h,
+    );
+    // Class colour wash from the bottom, stronger when kept.
+    paint::soft_disc(
+        &p,
+        pos2(rect.center().x, rect.bottom()),
+        rect.width() * 0.55,
+        theme::alpha(color, if on { 0.10 + 0.08 * h } else { 0.03 }),
+    );
+    p.rect_stroke(
+        rect,
+        r,
         Stroke::new(
             1.0,
             theme::lerp_color(
-                theme::STROKE,
+                theme::GLASS_STROKE,
                 color,
                 if on { 0.35 + 0.4 * h } else { 0.1 * h },
             ),
         ),
         StrokeKind::Inside,
     );
-    // Waveform.
+    if let Some(ptr) = resp.hover_pos() {
+        paint::spotlight(&p, rect, ptr, color, 2.0 * h);
+    }
+    let sweep = ctx.animate_bool_with_time(Id::unique(("kit-tile-shine", i)), resp.hovered(), 0.6);
+    if resp.hovered() {
+        paint::shine(&p, rect, sweep, 1.6);
+    }
+    // Waveform; the played part lights up white.
     let wave = Rect::from_min_max(rect.min + vec2(10.0, 30.0), rect.max - vec2(10.0, 30.0));
     let n = peaks.len().max(1);
     let wc = theme::alpha(color, if on { 0.95 } else { 0.35 });
     for (k, (lo, hi)) in peaks.iter().enumerate() {
-        let x = wave.left() + (k as f32 + 0.5) / n as f32 * wave.width();
+        let f = (k as f32 + 0.5) / n as f32;
+        let x = wave.left() + f * wave.width();
         let (lo, hi) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
         let y0 = wave.center().y - hi * wave.height() / 2.0;
         let y1 = wave.center().y - lo * wave.height() / 2.0;
-        p.vline(x, y0..=y1.max(y0 + 1.0), Stroke::new(1.4, wc));
+        let c = if playing.is_some_and(|pf| f <= pf) {
+            theme::lerp_color(color, Color32::WHITE, 0.6)
+        } else {
+            wc
+        };
+        p.vline(x, y0..=y1.max(y0 + 1.0), Stroke::new(1.4, c));
     }
     if let Some(f) = playing {
         let x = wave.left() + f.clamp(0.0, 1.0) * wave.width();
+        paint::glow(
+            &p,
+            Rect::from_x_y_ranges(x - 1.0..=x + 1.0, wave.y_range()),
+            0,
+            theme::alpha(Color32::WHITE, 0.4),
+            8.0,
+        );
         p.vline(
             x,
             wave.y_range().expand(4.0),
@@ -402,7 +466,11 @@ fn tile(
         Align2::LEFT_CENTER,
         name,
         theme::semi(13.5),
-        if on { theme::TEXT } else { theme::TEXT_FAINT },
+        if on {
+            theme::lerp_color(theme::TEXT, Color32::WHITE, h)
+        } else {
+            theme::TEXT_FAINT
+        },
     );
     p.text(
         pos2(rect.left() + 12.0, rect.bottom() - 14.0),
@@ -411,13 +479,20 @@ fn tile(
         theme::mono(10.5),
         theme::TEXT_FAINT,
     );
-    // Checkbox.
+    // Checkbox: pops when ticked, with a hover ring.
     let cb = Rect::from_center_size(
         pos2(rect.right() - 18.0, rect.top() + 16.0),
         vec2(18.0, 18.0),
     );
     let cresp = ui
-        .interact(cb.expand(4.0), Id::unique(("kit-check", i)), Sense::click())
+        .interact(
+            Rect::from_center_size(
+                pos2(slot.right() - 18.0, slot.top() + 16.0),
+                vec2(26.0, 26.0),
+            ),
+            Id::unique(("kit-check", i)),
+            Sense::click(),
+        )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(if on {
             "Leave out of the kit"
@@ -427,20 +502,63 @@ fn tile(
     if cresp.clicked() {
         *checked = !*checked;
     }
+    let ch = ctx.animate_bool_with_time(cresp.id.with("h"), cresp.hovered(), motion::FAST);
+    let k = motion::bouncy(&ctx, cresp.id.with("pop"), if *checked { 1.0 } else { 0.0 });
+    let t = ctx.animate_bool_with_time(cresp.id.with("on"), *checked, motion::BASE);
+    let cb = Rect::from_center_size(
+        cb.center(),
+        cb.size() * (1.0 + 0.2 * (k - t).abs() + 0.08 * ch),
+    );
+    if t > 0.0 {
+        paint::glow(
+            &p,
+            cb,
+            CornerRadius::same(5),
+            theme::alpha(color, 0.45 * t),
+            8.0,
+        );
+    }
     p.rect(
         cb,
         CornerRadius::same(5),
-        if on { color } else { Color32::TRANSPARENT },
-        Stroke::new(1.2, if on { color } else { theme::STROKE_HI }),
+        theme::alpha(color, t),
+        Stroke::new(
+            1.2,
+            theme::lerp_color(theme::lerp_color(theme::STROKE_HI, color, ch), color, t),
+        ),
         StrokeKind::Inside,
     );
-    if on {
+    if t > 0.05 {
         icons::paint(
             &p,
-            cb.shrink(3.0),
+            Rect::from_center_size(cb.center(), cb.shrink(3.0).size() * t.max(0.4)),
             Icon::Check,
             Color32::from_rgb(12, 10, 20),
         );
     }
+    paint::focus(&p, &cresp, cb, CornerRadius::same(5));
+    paint::focus(&p, &resp, rect, r);
     resp.clicked() && !cresp.clicked()
+}
+
+/// Class heading: a glowing dot, the class name in its colour, then the counts.
+fn class_header(ui: &mut egui::Ui, color: Color32, title: &str, counts: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (r, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
+        paint::glow_circle(ui.painter(), r.center(), 3.0, theme::alpha(color, 0.6), 8.0);
+        ui.painter().circle_filled(r.center(), 3.5, color);
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .font(theme::semi(theme::size::CAPTION))
+                .color(theme::lerp_color(color, theme::TEXT, 0.35))
+                .extra_letter_spacing(1.2),
+        );
+        ui.label(
+            egui::RichText::new(counts.to_uppercase())
+                .font(theme::semi(theme::size::CAPTION))
+                .color(theme::TEXT_FAINT)
+                .extra_letter_spacing(1.0),
+        );
+    });
 }

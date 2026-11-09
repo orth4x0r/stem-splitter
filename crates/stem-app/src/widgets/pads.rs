@@ -37,6 +37,8 @@ pub struct PadInfo<'a> {
     pub secs: f64,
     /// Highlighted from the waveform (hovered there).
     pub linked: bool,
+    /// Entrance progress 0..1 (pads pop in staggered when the chop changes).
+    pub enter: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,6 +98,12 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
     }
 
     let ctx = ui.ctx();
+    // Pop-in: scale up from 80 % with a little overshoot, fading in.
+    let enter = info.enter.clamp(0.0, 1.0);
+    let pop = theme::motion::ease_out_back(enter);
+    let rect = Rect::from_center_size(rect.center(), rect.size() * (0.8 + 0.2 * pop));
+    let mut painter = ui.painter().clone();
+    painter.multiply_opacity(theme::motion::ease_out(enter));
     let hover = ctx.animate_bool_with_time(id.with("h"), resp.hovered() && !empty, 0.1);
     let linked = ctx.animate_bool_with_time(id.with("l"), info.linked, 0.12);
     let color = info.slice.map_or(theme::STROKE_HI, slice_color);
@@ -108,12 +116,33 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
     } else {
         0.0
     };
+    // Fade fully out by 0.5 s, when the view stops repainting for this hit.
+    let flash = if info.held {
+        1.0
+    } else {
+        flash * (1.0 - age / 0.5).clamp(0.0, 1.0).sqrt()
+    };
     let flash = if flash < 0.004 { 0.0 } else { flash };
     let playing = info.slice.is_some() && (age as f64) < info.secs && info.hit.velocity > 0.0;
+    let progress = if playing {
+        (age as f64 / info.secs.max(1e-3)).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    // The slice's own loudness at the play position: the pad breathes with the audio.
+    let env = match info.mini {
+        Some(m) if playing && !m.is_empty() => {
+            let k = ((progress * m.len() as f32) as usize).min(m.len() - 1);
+            let peak = m.iter().copied().fold(0.05f32, f32::max);
+            (m[k] / peak).clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    let pulse = env * info.hit.velocity.max(0.4);
     let r = CornerRadius::same(12);
-    // Pressed pads sink a little.
-    let body = rect.shrink(1.5 * flash);
-    let p = ui.painter();
+    // Pressed pads sink a little, then swell with the audio while the slice plays.
+    let body = rect.shrink(1.5 * flash).expand(1.5 * pulse);
+    let p = &painter;
 
     if empty {
         p.rect_filled(rect, r, Color32::from_rgba_unmultiplied(255, 255, 255, 4));
@@ -136,10 +165,48 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
         return event;
     }
 
+    // Bloom: a soft light spills out around the pad on a hit and while the slice sounds.
+    let bloom = (0.75 * flash).max(0.45 * pulse);
+    if bloom > 0.01 {
+        paint::soft_disc(
+            p,
+            body.center(),
+            body.width().max(body.height()) * (0.85 + 0.25 * bloom),
+            theme::alpha(color, 0.42 * bloom),
+        );
+    }
+    // Hover lift: a deeper shadow under the pad.
+    paint::glow(
+        p,
+        body.translate(vec2(0.0, 4.0 + 3.0 * hover)),
+        r,
+        Color32::from_black_alpha((70.0 + 50.0 * hover) as u8),
+        10.0 + 6.0 * hover,
+    );
     // Glow.
-    let glow_a = 0.55 * flash + 0.12 * linked + 0.06 * hover;
+    let glow_a = 0.55 * flash + 0.12 * linked + 0.10 * hover + 0.3 * pulse;
     if glow_a > 0.0 {
-        paint::glow(p, body, r, theme::alpha(color, glow_a), 14.0 + 16.0 * flash);
+        paint::glow(
+            p,
+            body,
+            r,
+            theme::alpha(color, glow_a.min(1.0)),
+            14.0 + 16.0 * flash.max(pulse),
+        );
+    }
+    // Shock ring: a thin outline races outwards from the pad on every hit.
+    if !theme::motion::reduced() && info.hit.velocity > 0.0 && age < 0.42 {
+        let k = age / 0.42;
+        let e = theme::motion::ease_out(k);
+        p.rect_stroke(
+            body.expand(1.0 + 9.0 * e),
+            CornerRadius::same((12.0 + 5.0 * e) as u8),
+            Stroke::new(
+                2.0 * (1.0 - k) + 0.5,
+                theme::alpha(color, 0.9 * (1.0 - k) * info.hit.velocity),
+            ),
+            StrokeKind::Middle,
+        );
     }
     // Rubber body: a vertical gradient, lit towards the slice colour on hits.
     let top = theme::lerp_color(
@@ -162,12 +229,16 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
             rr * 1.6,
         );
     }
-    // Soft top sheen.
-    p.rect_filled(
-        Rect::from_min_size(body.min + vec2(6.0, 3.0), vec2(body.width() - 12.0, 1.5)),
-        CornerRadius::same(1),
-        Color32::from_white_alpha(18 + (40.0 * flash) as u8),
-    );
+    // Glass sheen on the rubber, and a light that follows the pointer.
+    paint::glass_sheen(p, body, r, 0.2 + 0.6 * hover + flash);
+    if hover > 0.0
+        && let Some(ptr) = resp.hover_pos()
+    {
+        paint::spotlight(p, body, ptr, color, 2.5 * hover);
+    }
+    if pulse > 0.05 {
+        paint::inner_glow(p, body, r, theme::alpha(color, 0.8 * pulse));
+    }
     // Neon edge.
     p.rect_stroke(
         body,
@@ -190,11 +261,6 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
         let n = mini.len();
         let bw = wr.width() / n as f32;
         let mid = wr.center().y;
-        let progress = if playing {
-            (age as f64 / info.secs.max(1e-3)).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
         let mut m = Mesh::default();
         for (k, v) in mini.iter().enumerate() {
             let x = wr.left() + k as f32 * bw;
@@ -252,17 +318,23 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
             theme::TEXT_DIM
         },
     );
-    // Play progress along the bottom edge.
+    // Play progress along the bottom edge, with a glowing head.
     if playing {
-        let f = (age as f64 / info.secs.max(1e-3)).clamp(0.0, 1.0) as f32;
         let bar = Rect::from_min_size(
             pos2(body.left() + 10.0, body.bottom() - 6.0),
-            vec2((body.width() - 20.0) * f, 2.0),
+            vec2((body.width() - 20.0) * progress, 2.0),
         );
         p.rect_filled(
             bar,
             CornerRadius::same(1),
             theme::alpha(Color32::WHITE, 0.8),
+        );
+        paint::glow_circle(
+            p,
+            bar.right_center(),
+            2.0,
+            theme::alpha(Color32::WHITE, 0.7),
+            8.0,
         );
     }
     event

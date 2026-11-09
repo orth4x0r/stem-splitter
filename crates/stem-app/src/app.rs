@@ -801,7 +801,10 @@ impl StemApp {
                 AppEvent::StemsExported(res) => {
                     self.export_busy = false;
                     match res {
-                        Ok((msg, _dir)) => self.toasts.success("Stems exported", msg),
+                        Ok((msg, _dir)) => {
+                            crate::widgets::buttons::export_succeeded();
+                            self.toasts.success("Stems exported", msg)
+                        }
                         Err(e) => self.toasts.error("Export failed", e),
                     }
                 }
@@ -813,12 +816,15 @@ impl StemApp {
                     }
                 }
                 AppEvent::SampleExported(res) => match res {
-                    Ok(p) => self.toasts.success(
-                        "Sample exported",
-                        p.file_name()
-                            .map(|f| f.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                    ),
+                    Ok(p) => {
+                        crate::widgets::buttons::export_succeeded();
+                        self.toasts.success(
+                            "Sample exported",
+                            p.file_name()
+                                .map(|f| f.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        )
+                    }
                     Err(e) => self.toasts.error("Export failed", e),
                 },
             }

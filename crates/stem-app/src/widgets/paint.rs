@@ -292,13 +292,24 @@ fn sheen_texture(ctx: &egui::Context) -> TextureId {
 /// The lit top half of a glass surface: a soft white falloff inside the rounded rect, plus a
 /// brighter hairline on the top edge. `strength` 0..1 (hover can raise it).
 pub fn glass_sheen(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius>, strength: f32) {
+    painter.extend(glass_sheen_shapes(painter.ctx(), rect, radius, strength));
+}
+
+/// [`glass_sheen`] as shapes (for painting behind content laid out later).
+pub fn glass_sheen_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    strength: f32,
+) -> Vec<Shape> {
     let radius = radius.into();
-    let tex = sheen_texture(painter.ctx());
+    let tex = sheen_texture(ctx);
     let a = (10.0 + 10.0 * strength).min(255.0) as u8;
-    painter.add(
+    let mut out = vec![
         RectShape::filled(rect.shrink(1.0), radius, Color32::from_white_alpha(a))
-            .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
-    );
+            .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))
+            .into(),
+    ];
     // Top-edge highlight that fades out towards the corners.
     let r = radius.nw.max(radius.ne) as f32;
     let y = rect.top() + 0.5;
@@ -321,8 +332,9 @@ pub fn glass_sheen(painter: &Painter, rect: Rect, radius: impl Into<CornerRadius
                 mesh.add_triangle(b - 1, b + 1, b);
             }
         }
-        painter.add(Shape::mesh(mesh));
+        out.push(Shape::mesh(mesh));
     }
+    out
 }
 
 /// A full glass card: drop shadow, translucent fill, hairline, sheen, optional coloured rim
@@ -334,28 +346,69 @@ pub fn glass(
     rim: Option<Color32>,
     hover: f32,
 ) {
+    painter.extend(glass_shapes(painter.ctx(), rect, radius, rim, hover));
+}
+
+/// [`glass`] as shapes, so a frame can reserve a slot before its content and fill it after.
+pub fn glass_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    rim: Option<Color32>,
+    hover: f32,
+) -> Vec<Shape> {
     let radius = radius.into();
-    glow(
-        painter,
+    let mut out = vec![glow_shape(
         rect.translate(vec2(0.0, 10.0 + 4.0 * hover)),
         radius,
         Color32::from_black_alpha((110.0 + 40.0 * hover) as u8),
         30.0 + 10.0 * hover,
-    );
-    if let Some(c) = rim {
-        glow(painter, rect, radius, c, 22.0);
+    )];
+    if let Some(c) = rim
+        && c.a() > 0
+    {
+        out.push(glow_shape(rect, radius, c, 22.0));
     }
-    painter.rect(
-        rect,
-        radius,
-        theme::lerp_color(theme::GLASS, Color32::from_rgb(26, 25, 44), hover * 0.7),
-        Stroke::new(
-            1.0,
-            theme::lerp_color(theme::GLASS_STROKE, theme::STROKE_HI, hover),
-        ),
-        egui::StrokeKind::Inside,
+    out.push(
+        RectShape::new(
+            rect,
+            radius,
+            theme::lerp_color(theme::GLASS, Color32::from_rgb(26, 25, 44), hover * 0.7),
+            Stroke::new(
+                1.0,
+                theme::lerp_color(theme::GLASS_STROKE, theme::STROKE_HI, hover),
+            ),
+            egui::StrokeKind::Inside,
+        )
+        .into(),
     );
-    glass_sheen(painter, rect, radius, hover);
+    out.extend(glass_sheen_shapes(ctx, rect, radius, hover));
+    out
+}
+
+/// A glass card around `add`: reserves a paint slot, lays the content out, then fills the
+/// slot with [`glass_shapes`] sized to the result. `rim` tints the edge glow.
+pub fn glass_card<R>(
+    ui: &mut egui::Ui,
+    margin: impl Into<egui::Margin>,
+    rim: Option<Color32>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let slot = ui.painter().add(Shape::Noop);
+    let r = egui::Frame::new().inner_margin(margin).show(ui, add);
+    let rect = r.response.rect;
+    let mut shapes = glass_shapes(ui.ctx(), rect, theme::R_CARD, rim, 0.0);
+    // Light along the top edge in the rim colour.
+    if let Some(c) = rim {
+        shapes.extend(edge_light_shapes(
+            rect,
+            Some(rect.left() + 170.0),
+            300.0,
+            theme::alpha(opaque(c), 0.7),
+        ));
+    }
+    ui.painter().set(slot, Shape::Vec(shapes));
+    r
 }
 
 /// Soft inner glow along the inside edge of a rounded rect (neon tube look).
@@ -552,5 +605,62 @@ pub fn gradient_strip(painter: &Painter, rect: Rect, u0: f32, u1: f32) {
             mesh.add_triangle(b - 1, b + 1, b);
         }
     }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// A coloured light along the top edge of a card: a hairline that fades out towards both
+/// ends, with a soft spill of the colour just inside. `width` is the lit span, centred on
+/// `cx` (or the card's centre).
+pub fn edge_light_shapes(rect: Rect, cx: Option<f32>, width: f32, color: Color32) -> Vec<Shape> {
+    let cx = cx.unwrap_or(rect.center().x);
+    let x0 = (cx - width / 2.0).max(rect.left() + 14.0);
+    let x1 = (cx + width / 2.0).min(rect.right() - 14.0);
+    if x1 <= x0 + 4.0 {
+        return Vec::new();
+    }
+    let y = rect.top() + 0.5;
+    let n = 24;
+    let mut line = egui::Mesh::default();
+    let mut spill = egui::Mesh::default();
+    for i in 0..=n {
+        let f = i as f32 / n as f32;
+        let x = x0 + (x1 - x0) * f;
+        let a = 1.0 - (2.0 * f - 1.0).powi(2);
+        let c = theme::alpha(color, a);
+        line.colored_vertex(pos2(x, y - 0.6), c);
+        line.colored_vertex(pos2(x, y + 0.9), c);
+        spill.colored_vertex(pos2(x, y + 0.5), theme::alpha(color, 0.16 * a));
+        spill.colored_vertex(pos2(x, y + 14.0), Color32::TRANSPARENT);
+        if i > 0 {
+            let b = (2 * i) as u32;
+            for m in [&mut line, &mut spill] {
+                m.add_triangle(b - 2, b - 1, b);
+                m.add_triangle(b - 1, b + 1, b);
+            }
+        }
+    }
+    vec![Shape::mesh(spill), Shape::mesh(line)]
+}
+
+/// [`edge_light_shapes`] painted now.
+pub fn edge_light(painter: &Painter, rect: Rect, cx: Option<f32>, width: f32, color: Color32) {
+    painter.extend(edge_light_shapes(rect, cx, width, color));
+}
+
+/// Opaque version of a (premultiplied, translucent) colour, for lights tinted by a rim colour.
+pub fn opaque(c: Color32) -> Color32 {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    Color32::from_rgb(r, g, b)
+}
+
+/// Horizontal two-colour gradient rect (no rounding) from vertex colours.
+pub fn hgradient(painter: &Painter, rect: Rect, left: Color32, right: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), left);
+    mesh.colored_vertex(rect.right_top(), right);
+    mesh.colored_vertex(rect.left_bottom(), left);
+    mesh.colored_vertex(rect.right_bottom(), right);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
     painter.add(Shape::mesh(mesh));
 }
