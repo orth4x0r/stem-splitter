@@ -29,6 +29,106 @@ pub fn export_format_row(app: &mut StemApp, ui: &mut egui::Ui) {
     });
 }
 
+/// "File names": the export naming template, clickable tokens and a live preview (the open
+/// session's values, or an example track).
+pub fn naming_row(app: &mut StemApp, ui: &mut egui::Ui) {
+    use crate::export::{self, NameCtx, TOKENS};
+    row(ui, "File names", |ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut app.settings.export_template)
+                .id_salt("settings-template")
+                .font(theme::mono(13.0))
+                .hint_text(export::DEFAULT_TEMPLATE)
+                .desired_width(300.0),
+        );
+        ui.add_space(4.0);
+        if app.settings.export_template != export::DEFAULT_TEMPLATE
+            && Button::ghost("Reset").height(30.0).show(ui).clicked()
+        {
+            app.settings.export_template = export::DEFAULT_TEMPLATE.to_owned();
+        }
+    });
+    // Token chips: click to append.
+    ui.horizontal(|ui| {
+        ui.add_space(190.0);
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for tok in TOKENS {
+            let color = match tok {
+                "{bpm}" => theme::PINK,
+                "{key}" => theme::VIOLET,
+                "{range}" => theme::CYAN,
+                _ => theme::TEXT_DIM,
+            };
+            if crate::widgets::buttons::chip(ui, tok, color, false)
+                .on_hover_text("Add to the template")
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                let t = &mut app.settings.export_template;
+                if !t.is_empty() && !t.ends_with(' ') {
+                    t.push_str(" - ");
+                }
+                t.push_str(tok);
+            }
+        }
+    });
+    let example = |range| NameCtx {
+        title: "Midnight Drive".into(),
+        bpm: Some(90.0),
+        key: Some("Am".into()),
+        range,
+        model: "HTDemucs 4-stem".into(),
+    };
+    let (whole, part) = match &app.session {
+        Some(s) => {
+            let n = s.names();
+            let r = n
+                .range
+                .or(Some(crate::section::SplitRange::new(62.0, 94.0)));
+            (
+                NameCtx {
+                    range: None,
+                    ..n.clone()
+                },
+                NameCtx { range: r, ..n },
+            )
+        }
+        None => (
+            example(None),
+            example(Some(crate::section::SplitRange::new(62.0, 94.0))),
+        ),
+    };
+    let ext = app.settings.export_format.audio_format().extension();
+    let tpl = app.settings.export_template.clone();
+    for (label, ctx) in [("whole track", whole), ("section", part)] {
+        ui.horizontal(|ui| {
+            ui.add_space(190.0);
+            let name = export::render_name(&tpl, &ctx, "Drums", 2);
+            let (r, _) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::hover());
+            ui.painter().text(
+                pos2(r.left(), r.center().y),
+                egui::Align2::LEFT_CENTER,
+                label.to_uppercase(),
+                theme::semi(10.0),
+                theme::TEXT_GHOST,
+            );
+            ui.label(
+                egui::RichText::new(elide(&format!("{name}.{ext}"), 70))
+                    .font(theme::mono(12.0))
+                    .color(theme::TEXT),
+            );
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(190.0);
+        hint(
+            ui,
+            "Unknown values drop out. Section splits get the range, e.g. (1m02-1m34), even without {range}.",
+        );
+    });
+    ui.add_space(4.0);
+}
+
 pub fn ffmpeg_row(app: &mut StemApp, ui: &mut egui::Ui) {
     row(ui, "ffmpeg", |ui| {
         if app.ffmpeg.busy {

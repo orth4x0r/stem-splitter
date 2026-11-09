@@ -23,6 +23,7 @@ mod paths;
 mod pipeline;
 mod player;
 mod queue;
+mod section;
 mod settings;
 mod shot;
 mod splash;

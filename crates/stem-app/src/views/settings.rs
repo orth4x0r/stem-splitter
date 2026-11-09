@@ -94,6 +94,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 buttons::segmented(ui, "wav", &mut app.settings.wav, &opts);
             });
             super::settings_tools::export_format_row(app, ui);
+            super::settings_tools::naming_row(app, ui);
         },
     );
 

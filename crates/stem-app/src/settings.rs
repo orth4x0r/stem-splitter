@@ -109,7 +109,7 @@ pub struct Settings {
     pub wav: WavChoice,
     /// Exported stems and samples.
     pub export_format: ExportFormat,
-    /// File names for "Export stems", e.g. "{track} - {stem}".
+    /// File names for "Export stems", e.g. "{title} - {stem}" (see `export::render_name`).
     pub export_template: String,
     /// "Export stems" also writes "all but X" mixes.
     pub export_without: bool,
@@ -131,6 +131,8 @@ pub struct Settings {
     pub reduce_motion: bool,
     /// Play the short logo intro on launch.
     pub intro: bool,
+    /// Open the section picker after download, before separating.
+    pub pick_section: bool,
 }
 
 impl Default for Settings {
@@ -152,6 +154,7 @@ impl Default for Settings {
             history: Vec::new(),
             reduce_motion: false,
             intro: true,
+            pick_section: false,
         }
     }
 }
@@ -214,6 +217,6 @@ mod tests {
         assert_eq!(partial.wav, WavChoice::Pcm16);
         assert!(partial.normalize_samples);
         assert_eq!(partial.export_format, ExportFormat::Wav24);
-        assert_eq!(partial.export_template, "{track} - {stem}");
+        assert_eq!(partial.export_template, crate::export::DEFAULT_TEMPLATE);
     }
 }

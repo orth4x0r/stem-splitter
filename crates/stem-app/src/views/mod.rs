@@ -13,6 +13,7 @@ mod models_dl;
 mod progress;
 mod queue;
 mod results;
+mod section;
 mod settings;
 mod settings_tools;
 mod transform;
@@ -48,7 +49,12 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
 
     let page = app.page;
     // Page entrance: fade + rise, keyed on what the page shows.
-    let key = (page as u8, app.job.is_some(), app.session.is_some());
+    let key = (
+        page as u8,
+        app.job.is_some(),
+        app.session.is_some(),
+        app.section.is_some(),
+    );
     let enter = motion::ease_out(motion::appear(
         &ctx,
         Id::unique(("page-enter", key)),
@@ -84,6 +90,8 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
                                             queue::panel(app, ui);
                                         });
                                     }
+                                } else if app.section.is_some() {
+                                    section::page(app, ui);
                                 } else if app.session.is_some() {
                                     results::page(app, ui);
                                 } else {

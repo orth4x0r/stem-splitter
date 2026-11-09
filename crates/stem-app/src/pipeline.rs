@@ -14,6 +14,7 @@ use stem_models::{Device, DownloadStatus, ModelInfo, ModelManager, Progress, Ste
 
 use crate::backend::guard;
 use crate::paths::{AppPaths, sanitize_file_name};
+use crate::section::{Origin, SplitRange};
 use crate::waveform::{BUCKETS, Envelope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,10 @@ pub struct JobRequest {
     pub cookies_from_browser: Option<String>,
     pub paths: AppPaths,
     pub demo: bool,
+    /// Split only this part of the input (pre-split step / "Re-split this selection").
+    pub range: Option<SplitRange>,
+    /// Title to use instead of guessing one from the source (an already fetched file).
+    pub title: Option<String>,
 }
 
 pub struct StemOut {
@@ -123,6 +128,8 @@ pub struct JobOutput {
     pub stems: Vec<StemOut>,
     /// Tempo / beat grid / key, `None` if analysis failed.
     pub analysis: Option<crate::analysis::TrackAnalysis>,
+    /// Where the stems came from (source, local input, section), for "Re-split".
+    pub origin: Origin,
 }
 
 /// Tempo and key detection over the finished stems (well under a second).
@@ -138,6 +145,8 @@ pub enum JobEvent {
     /// Fraction of the current stage, `None` = indeterminate.
     Progress(Option<f32>),
     Title(String),
+    /// The pre-split step has the decoded input ready for picking a section.
+    Prepared(Box<crate::section::Prepared>),
     Done(Box<JobOutput>),
     Failed(String),
     Cancelled,
@@ -216,10 +225,19 @@ fn model_progress(send: Emit<'_>) -> impl FnMut(Progress) + '_ {
     }
 }
 
-fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<JobOutput, String> {
-    // 1. Fetch
-    let (path, title) = match &req.source {
-        InputSource::File(p) => (p.clone(), req.source.provisional_title()),
+/// Fetch `req.source` to a local file (a no-op for files). Returns the path and the title.
+pub(crate) fn fetch_input(
+    req: &JobRequest,
+    cancel: &AtomicBool,
+    send: Emit<'_>,
+) -> Result<(PathBuf, String), String> {
+    Ok(match &req.source {
+        InputSource::File(p) => (
+            p.clone(),
+            req.title
+                .clone()
+                .unwrap_or_else(|| req.source.provisional_title()),
+        ),
         InputSource::Url(url) => {
             send(JobEvent::Stage(Stage::Fetching, "Grabbing audio".into()));
             let mut fetcher = Fetcher::new(req.paths.tools.clone(), req.paths.downloads.clone());
@@ -246,13 +264,21 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
             send(JobEvent::Title(fetched.title.clone()));
             (fetched.path, fetched.title)
         }
-    };
+    })
+}
+
+fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<JobOutput, String> {
+    // 1. Fetch
+    let (path, title) = fetch_input(req, cancel, send)?;
     check(cancel)?;
 
     // 2. Decode
     send(JobEvent::Stage(Stage::Decoding, "Reading audio".into()));
     send(JobEvent::Progress(None));
     let mix = stem_audio::decode_file(&path).map_err(|e| e.to_string())?;
+    // Only the chosen section (plus a little padding the model sees as context).
+    let cut = crate::section::cut(&mix, req.range);
+    drop(mix);
     check(cancel)?;
 
     // 3. Runtime + model
@@ -295,12 +321,16 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
     ));
     send(JobEvent::Progress(Some(0.0)));
     let stems = sep
-        .separate(&mix, &mut model_progress(send), cancel)
+        .separate(&cut.audio, &mut model_progress(send), cancel)
         .map_err(|e| e.to_string())?;
+    let stems = cut.trim(stems);
     check(cancel)?;
 
     // 5. Write
-    write_stems(req, &title, stems, send)
+    let mut out = write_stems(req, &title, stems, send)?;
+    out.origin.input = Some(path);
+    out.origin.save(&out.out_dir);
+    Ok(out)
 }
 
 fn write_stems(
@@ -310,7 +340,8 @@ fn write_stems(
     send: Emit<'_>,
 ) -> Result<JobOutput, String> {
     send(JobEvent::Stage(Stage::Writing, "Saving WAVs".into()));
-    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(title)));
+    let dir_name = crate::section::dir_name(title, req.range);
+    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(&dir_name)));
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     let n = stems.len().max(1);
     let mut out = Vec::new();
@@ -332,11 +363,24 @@ fn write_stems(
     ));
     send(JobEvent::Progress(None));
     let analysis = analyze(&out);
+    // Tempo / key in the WAVs themselves, so a stem dragged into a DAW lands in time.
+    let meta = crate::export::wav_meta(analysis.as_ref(), false, None);
+    if !meta.is_empty() {
+        for s in &out {
+            let _ = stem_audio::wavmeta::apply_to_file(&s.path, &meta);
+        }
+    }
     Ok(JobOutput {
         title: title.to_owned(),
         out_dir,
         stems: out,
         analysis,
+        origin: Origin {
+            source: req.source.display(),
+            input: None,
+            range: req.range,
+            model_name: req.model.name.to_owned(),
+        },
     })
 }
 
@@ -378,20 +422,35 @@ fn run_demo(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
         format!("Loading {}", req.model.name),
     ));
     std::thread::sleep(Duration::from_millis(700));
+    // After the pre-split step the demo plays a longer arrangement, cut to the section.
+    let arranged = req.title.is_some() || req.range.is_some();
     let stems: Vec<_> = req
         .model
         .stems
         .iter()
-        .map(|k| (*k, crate::demo::stem(*k)))
+        .map(|k| {
+            let audio = if arranged {
+                crate::section::demo_arrangement(*k)
+            } else {
+                crate::demo::stem(*k)
+            };
+            (*k, crate::section::slice(&audio, req.range))
+        })
         .collect();
     tick(Stage::Separating, req.model.name, 120, 40)?;
-    let title = match &req.source {
-        InputSource::File(_) => req.source.provisional_title(),
-        InputSource::Url(_) => crate::demo::DEMO_TITLE.to_owned(),
+    let title = match (&req.title, &req.source) {
+        (Some(t), _) => t.clone(),
+        (None, InputSource::File(_)) => req.source.provisional_title(),
+        (None, InputSource::Url(_)) => crate::demo::DEMO_TITLE.to_owned(),
     };
     let mut req = req.clone();
     req.output_root = std::env::temp_dir().join("stem-splitter-demo");
-    write_stems(&req, &title, stems, send)
+    let mut out = write_stems(&req, &title, stems, send)?;
+    if let InputSource::File(p) = &req.source {
+        out.origin.input = Some(p.clone());
+    }
+    out.origin.save(&out.out_dir);
+    Ok(out)
 }
 
 // ---- smaller tasks -------------------------------------------------------------------------
@@ -462,6 +521,8 @@ pub struct SampleExport {
     pub normalize: bool,
     pub format: AudioFormat,
     pub path: PathBuf,
+    /// Tempo / key / loop chunks for WAV output (loop end is clamped to the clip).
+    pub meta: stem_audio::wavmeta::WavMeta,
 }
 
 /// Slice + fade + normalise + write one sample (blocking). Returns the written path.
@@ -490,7 +551,11 @@ pub fn render_sample(job: &SampleExport) -> Result<PathBuf, String> {
     if let Some(dir) = job.path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    stem_audio::write_audio(&job.path, &clip, job.format).map_err(|e| e.to_string())?;
+    let n = clip.frames() as u32;
+    let mut meta = job.meta;
+    meta.loop_frames = meta.loop_frames.map(|(a, b)| (a.min(n), b.min(n)));
+    stem_audio::wavmeta::write_audio_meta(&job.path, &clip, job.format, &meta)
+        .map_err(|e| e.to_string())?;
     Ok(job.path.clone())
 }
 
@@ -608,6 +673,7 @@ pub fn spawn_load_history(
                 out_dir: out_dir.clone(),
                 stems,
                 analysis,
+                origin: Origin::load(&out_dir),
             })
         });
         match result.and_then(|r| r) {
@@ -673,6 +739,8 @@ mod tests {
             cookies_from_browser: None,
             paths,
             demo: false,
+            range: None,
+            title: None,
         };
         let cancel = AtomicBool::new(false);
         let out = run_real(&req, &cancel, &|ev| {
