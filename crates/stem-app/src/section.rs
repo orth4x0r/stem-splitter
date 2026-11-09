@@ -372,8 +372,14 @@ impl SectionPick {
 }
 
 /// Rough wall-clock seconds to split `audio_secs` of audio with a model of `arch` (padding
-/// and model loading included). Ballpark figures for a mid-range GPU / 8-core CPU.
-pub fn estimate_secs(arch: &ModelArch, gpu: bool, audio_secs: f64) -> f64 {
+/// and model loading included) at split quality `quality`, which scales the model time by its
+/// extra chunk overlap. Ballpark figures (Fast) for a mid-range GPU / 8-core CPU.
+pub fn estimate_secs(
+    arch: &ModelArch,
+    gpu: bool,
+    audio_secs: f64,
+    quality: crate::quality::SplitQuality,
+) -> f64 {
     // Seconds of work per second of audio.
     let (on_gpu, on_cpu) = match arch {
         ModelArch::MdxNet { .. } => (0.05, 0.45),
@@ -382,7 +388,7 @@ pub fn estimate_secs(arch: &ModelArch, gpu: bool, audio_secs: f64) -> f64 {
         ModelArch::Scnet { .. } => (0.08, 0.7),
         ModelArch::Mdx23c { .. } => (0.2, 2.5),
     };
-    let rate = if gpu { on_gpu } else { on_cpu };
+    let rate = if gpu { on_gpu } else { on_cpu } * quality.cost(arch);
     let load = if gpu { 5.0 } else { 3.0 };
     load + rate * (audio_secs + 2.0 * PAD_SECS)
 }
@@ -602,10 +608,18 @@ mod tests {
         let arch = ModelArch::HtDemucs {
             segment_samples: 343_980,
         };
-        let short = estimate_secs(&arch, true, 30.0);
-        let long = estimate_secs(&arch, true, 240.0);
+        use crate::quality::SplitQuality::{Balanced, Best, Fast};
+        let short = estimate_secs(&arch, true, 30.0, Fast);
+        let long = estimate_secs(&arch, true, 240.0, Fast);
         assert!(short < long);
-        assert!(estimate_secs(&arch, false, 30.0) > short);
+        assert!(estimate_secs(&arch, false, 30.0, Fast) > short);
+        // Slower settings take longer: more overlap, more chunks.
+        let balanced = estimate_secs(&arch, true, 240.0, Balanced);
+        let best = estimate_secs(&arch, true, 240.0, Best);
+        assert!(
+            long < balanced && balanced < best,
+            "{long} {balanced} {best}"
+        );
     }
 
     /// The whole flow in demo mode, on worker threads like the app runs it: pre-split step,
@@ -635,6 +649,7 @@ mod tests {
             range: None,
             title: None,
             chain: None,
+            quality: Default::default(),
         };
         let wait = |want_done: bool| -> Result<AppEvent, String> {
             loop {

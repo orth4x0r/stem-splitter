@@ -117,6 +117,8 @@ pub struct RefineRequest {
     /// Stem kinds the session already has; those outputs are dropped, never overwritten.
     pub existing: Vec<StemKind>,
     pub demo: bool,
+    /// Chunk overlap for the model run.
+    pub quality: crate::quality::SplitQuality,
 }
 
 pub enum RefineEvent {
@@ -152,7 +154,7 @@ fn run(
     let mut runner: Box<dyn Runner> = if req.demo {
         Box::new(chain::DemoRunner)
     } else {
-        Box::new(chain::OrtRunner::with(&req.paths, req.device))
+        Box::new(chain::OrtRunner::with(&req.paths, req.device, req.quality))
     };
     let emit = |detail: &str, f: Option<f32>| send(RefineEvent::Progress(detail.to_owned(), f));
     runner.prepare(&emit)?;
@@ -246,6 +248,7 @@ mod tests {
             meta: Default::default(),
             existing: vec![StemKind::Vocals, StemKind::Reverb],
             demo: true,
+            quality: Default::default(),
         };
         let seen = std::cell::RefCell::new(Vec::new());
         let stems = run(&req, &AtomicBool::new(false), &|ev| {

@@ -164,6 +164,16 @@ pub fn builtin_presets() -> Vec<Preset> {
                 Step::new(StepInput::Stem(StemKind::Vocals), "mdx-reverb-hq"),
             ],
         ),
+        p(
+            "lead-backing",
+            "Lead / backing vocals",
+            "RoFormer takes the vocal, Karaoke 2 splits it into the lead and the backing \
+             harmonies: stack or flip them separately.",
+            vec![
+                Step::new(StepInput::Mix, "mel-roformer-kim"),
+                Step::new(StepInput::Stem(StemKind::Vocals), "mdx-karaoke-2"),
+            ],
+        ),
     ]
 }
 
@@ -226,6 +236,8 @@ pub struct Settings {
     pub stem_cache_gb: f32,
     /// The first-run welcome was seen (or skipped).
     pub welcomed: bool,
+    /// Chunk overlap for every model run (see [`crate::quality`]).
+    pub split_quality: crate::quality::SplitQuality,
 }
 
 impl Default for Settings {
@@ -253,6 +265,7 @@ impl Default for Settings {
             stem_cache: true,
             stem_cache_gb: 8.0,
             welcomed: false,
+            split_quality: crate::quality::SplitQuality::default(),
         }
     }
 }
@@ -373,7 +386,7 @@ mod tests {
     fn builtin_presets_use_real_models() {
         let find = |id: &str| stem_models::find_model(id);
         let all = builtin_presets();
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 7);
         for p in &all {
             assert!(p.is_builtin());
             let plan = p
@@ -390,6 +403,22 @@ mod tests {
                 StemKind::Drums,
                 StemKind::Bass,
                 StemKind::Other
+            ]
+        );
+        let voices = all.iter().find(|p| p.id == "builtin:lead-backing").unwrap();
+        assert_eq!(voices.name, "Lead / backing vocals");
+        assert_eq!(
+            voices.chain.model_ids(),
+            vec!["mel-roformer-kim", "mdx-karaoke-2"]
+        );
+        // The vocal stem is consumed by the karaoke step: out come the instrumental and the
+        // two vocal layers.
+        assert_eq!(
+            voices.chain.plan(&find).unwrap().kinds(),
+            vec![
+                StemKind::Instrumental,
+                StemKind::BackingVocals,
+                StemKind::LeadVocals
             ]
         );
     }
@@ -419,7 +448,7 @@ mod tests {
         // Saving a copy of a built-in makes a new user preset.
         let id = s.save_preset(p.clone());
         assert_eq!(id, "user:1");
-        assert_eq!(s.all_presets().len(), 7);
+        assert_eq!(s.all_presets().len(), builtin_presets().len() + 1);
         let mut edited = s.find_preset(&id).unwrap();
         edited.name = "Renamed".into();
         assert_eq!(s.save_preset(edited), id);

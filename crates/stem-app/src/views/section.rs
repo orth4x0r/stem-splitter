@@ -44,6 +44,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let playing = app.player.is_playing();
     let playhead = app.player.position();
     let gpu = app.settings.device != Device::Cpu && (cfg!(windows) || app.demo());
+    let quality = app.settings.split_quality;
     let model = app
         .backend
         .model(app.settings.model_id.as_deref())
@@ -233,9 +234,13 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         };
         tile(&tp(2), tile_r(2), "Length", &mmss_t(len), Some(&len_sub), theme::TEXT_FAINT);
         if let Some((arch, _)) = &model {
-            let est = estimate_secs(arch, gpu, len);
-            let full = estimate_secs(arch, gpu, dur);
-            let on = if gpu { "GPU" } else { "CPU" };
+            let est = estimate_secs(arch, gpu, len, quality);
+            let full = estimate_secs(arch, gpu, dur, quality);
+            let on = match (gpu, quality) {
+                (true, crate::quality::SplitQuality::Fast) => "GPU".to_owned(),
+                (false, crate::quality::SplitQuality::Fast) => "CPU".to_owned(),
+                (g, q) => format!("{} · {}", if g { "GPU" } else { "CPU" }, q.label()),
+            };
             let sub = if whole {
                 format!("rough guess · {on}")
             } else {

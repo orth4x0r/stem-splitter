@@ -177,6 +177,7 @@ impl StemApp {
             meta: crate::export::wav_meta(s.analysis.as_ref(), false, None),
             existing: s.kinds(),
             demo: self.demo(),
+            quality: self.settings.split_quality,
         };
         self.refine = Some(RefineJob {
             id,

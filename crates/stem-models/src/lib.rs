@@ -44,6 +44,12 @@ use stem_audio::AudioBuffer;
 
 pub use catalog::{find_model, registry};
 pub use devices::{GpuAdapter, gpu_adapters, list_devices};
+
+/// What `device` means on this machine right now: [`Device::Auto`] becomes the DirectML adapter
+/// it would use (or the CPU), and DirectML off Windows becomes the CPU.
+pub fn resolve_device(device: Device) -> Device {
+    devices::resolve(device)
+}
 pub use download::DownloadStatus;
 pub use runtime::{DIRECTML_VERSION, ORT_VERSION};
 
@@ -285,6 +291,9 @@ pub enum Progress {
     LoadingModel,
     /// Fraction of the audio processed so far.
     Separating(f32),
+    /// The GPU run failed (an error, or broken output such as NaN or peaks far above full
+    /// scale) and the separation starts over on the CPU. The text says what went wrong.
+    RetryingOnCpu(String),
 }
 
 /// Downloads and caches models and the ONNX Runtime library under `root`.
@@ -332,8 +341,10 @@ pub fn load(info: &ModelInfo, model_path: &Path, device: Device) -> Result<Box<d
 
 /// [`load`] with explicit [`LoadOptions`].
 ///
-/// On a GPU, a separation that runs out of video memory (common on iGPUs with a few hundred MB
-/// of dedicated memory) is retried on the CPU instead of failing.
+/// On a GPU, a separation that fails (out of video memory, common on iGPUs with a few hundred MB
+/// of dedicated memory, or any other runtime error) or returns broken output (see
+/// [`output_problem`]) is retried on the CPU instead of failing; the retry is announced with
+/// [`Progress::RetryingOnCpu`].
 pub fn load_with(
     info: &ModelInfo,
     model_path: &Path,
@@ -344,7 +355,7 @@ pub fn load_with(
     if inner.active_device() == Device::Cpu {
         return Ok(inner);
     }
-    Ok(Box::new(OomFallback {
+    Ok(Box::new(GpuFallback {
         inner,
         model_path: model_path.to_path_buf(),
         options: options.clone(),
@@ -371,15 +382,43 @@ pub fn all_finite(stems: &[(StemKind, AudioBuffer)]) -> bool {
         .all(|(_, b)| b.channels.iter().all(|c| c.iter().all(|v| v.is_finite())))
 }
 
-/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU runs out of memory
-/// or returns non-finite output.
-struct OomFallback {
+/// A stem peaking above this many times the input's peak (and above [`MIN_BROKEN_PEAK`]) is
+/// taken as broken GPU output. Real stems can top the mix a little where sources cancel, never
+/// by 18 dB; the DirectML fusion bug this guards against gave peaks around 1e5.
+pub const BROKEN_PEAK_RATIO: f32 = 8.0;
+/// Floor for the broken-output peak limit, so a near-silent input doesn't flag normal stems.
+pub const MIN_BROKEN_PEAK: f32 = 2.0;
+
+/// Why separated `stems` of `mix` look broken (NaN / Inf, or peaks far above full scale), or
+/// `None` if they look like audio.
+pub fn output_problem(mix: &AudioBuffer, stems: &[(StemKind, AudioBuffer)]) -> Option<String> {
+    if !all_finite(stems) {
+        return Some("output contained NaN/Inf".to_owned());
+    }
+    let limit = (BROKEN_PEAK_RATIO * mix.peak()).max(MIN_BROKEN_PEAK);
+    stems
+        .iter()
+        .map(|(k, b)| (k, b.peak()))
+        .find(|(_, p)| *p > limit)
+        .map(|(k, p)| {
+            format!(
+                "{} peaks at {:+.0} dBFS (input {:+.0} dBFS)",
+                k.label(),
+                20.0 * p.log10(),
+                20.0 * mix.peak().max(1e-9).log10()
+            )
+        })
+}
+
+/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU run fails or
+/// returns broken output.
+struct GpuFallback {
     inner: Box<dyn Separator>,
     model_path: PathBuf,
     options: LoadOptions,
 }
 
-impl Separator for OomFallback {
+impl Separator for GpuFallback {
     fn info(&self) -> &ModelInfo {
         self.inner.info()
     }
@@ -391,16 +430,24 @@ impl Separator for OomFallback {
         cancel: &AtomicBool,
     ) -> Result<Vec<(StemKind, AudioBuffer)>> {
         let on_gpu = self.inner.active_device() != Device::Cpu;
-        let why = match self.inner.separate(mix, progress, cancel) {
-            Err(e) if on_gpu && is_out_of_memory(&e) => format!("GPU ran out of memory ({e})"),
+        let result = self.inner.separate(mix, progress, cancel);
+        if !on_gpu || cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return result;
+        }
+        let why = match result {
+            Err(ModelError::Cancelled) => return Err(ModelError::Cancelled),
+            Err(e) if is_out_of_memory(&e) => format!("GPU ran out of memory ({e})"),
+            Err(e) => format!("GPU run failed ({e})"),
             // DirectML has operator bugs on some shapes (e.g. InstanceNormalization in MDX23C
-            // on RDNA2) that yield NaN with no error; never hand silent garbage to the user.
-            Ok(stems) if on_gpu && !all_finite(&stems) => {
-                "GPU output contained NaN/Inf (DirectML operator bug)".to_owned()
-            }
-            r => return r,
+            // on RDNA2, graph fusion in HTDemucs) that yield NaN or huge values with no error;
+            // never hand silent garbage to the user.
+            Ok(stems) => match output_problem(mix, &stems) {
+                Some(p) => format!("GPU {p}"),
+                None => return Ok(stems),
+            },
         };
         tracing::warn!("{why}; retrying on the CPU");
+        progress(Progress::RetryingOnCpu(why));
         let info = self.inner.info().clone();
         self.inner = load_on(&info, &self.model_path, Device::Cpu, &self.options)?;
         self.inner.separate(mix, progress, cancel)
@@ -480,5 +527,26 @@ mod oom_tests {
             (StemKind::Bass, buf(f32::NAN))
         ]));
         assert!(!all_finite(&[(StemKind::Drums, buf(f32::INFINITY))]));
+    }
+
+    #[test]
+    fn broken_output_is_detected() {
+        let buf = |v: f32| AudioBuffer {
+            sample_rate: 44_100,
+            channels: vec![vec![0.1, v], vec![0.0, -v]],
+        };
+        let mix = buf(0.9);
+        assert_eq!(output_problem(&mix, &[(StemKind::Vocals, buf(1.3))]), None);
+        assert!(
+            output_problem(&mix, &[(StemKind::Vocals, buf(f32::NAN))])
+                .unwrap()
+                .contains("NaN")
+        );
+        let huge = output_problem(&mix, &[(StemKind::Drums, buf(1e5))]).unwrap();
+        assert!(huge.starts_with("Drums peaks at +100 dBFS"), "{huge}");
+        // A near-silent input: the floor keeps ordinary stems from being flagged.
+        let quiet = buf(0.01);
+        assert_eq!(output_problem(&quiet, &[(StemKind::Bass, buf(0.5))]), None);
+        assert!(output_problem(&quiet, &[(StemKind::Bass, buf(3.0))]).is_some());
     }
 }
