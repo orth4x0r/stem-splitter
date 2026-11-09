@@ -268,7 +268,74 @@ pub fn load(info: &ModelInfo, model_path: &Path, device: Device) -> Result<Box<d
 }
 
 /// [`load`] with explicit [`LoadOptions`].
+///
+/// On a GPU, a separation that runs out of video memory (common on iGPUs with a few hundred MB
+/// of dedicated memory) is retried on the CPU instead of failing.
 pub fn load_with(
+    info: &ModelInfo,
+    model_path: &Path,
+    device: Device,
+    options: &LoadOptions,
+) -> Result<Box<dyn Separator>> {
+    let inner = load_on(info, model_path, device, options)?;
+    if inner.active_device() == Device::Cpu {
+        return Ok(inner);
+    }
+    Ok(Box::new(OomFallback {
+        inner,
+        model_path: model_path.to_path_buf(),
+        options: options.clone(),
+    }))
+}
+
+/// True for ONNX Runtime / DirectML errors that mean the device ran out of memory.
+pub fn is_out_of_memory(err: &ModelError) -> bool {
+    let ModelError::Runtime(msg) = err else {
+        return false;
+    };
+    let m = msg.to_ascii_lowercase();
+    m.contains("8007000e")
+        || m.contains("not enough memory")
+        || m.contains("out of memory")
+        || m.contains("e_outofmemory")
+        || m.contains("bad_alloc")
+}
+
+/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU runs out of memory.
+struct OomFallback {
+    inner: Box<dyn Separator>,
+    model_path: PathBuf,
+    options: LoadOptions,
+}
+
+impl Separator for OomFallback {
+    fn info(&self) -> &ModelInfo {
+        self.inner.info()
+    }
+
+    fn separate(
+        &mut self,
+        mix: &AudioBuffer,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<(StemKind, AudioBuffer)>> {
+        match self.inner.separate(mix, progress, cancel) {
+            Err(e) if self.inner.active_device() != Device::Cpu && is_out_of_memory(&e) => {
+                tracing::warn!("GPU ran out of memory ({e}); retrying on the CPU");
+                let info = self.inner.info().clone();
+                self.inner = load_on(&info, &self.model_path, Device::Cpu, &self.options)?;
+                self.inner.separate(mix, progress, cancel)
+            }
+            r => r,
+        }
+    }
+
+    fn active_device(&self) -> Device {
+        self.inner.active_device()
+    }
+}
+
+fn load_on(
     info: &ModelInfo,
     model_path: &Path,
     device: Device,
@@ -303,5 +370,21 @@ pub fn load_with(
         ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => Ok(Box::new(
             roformer::SpecSeparator::new(info.clone(), Box::new(session), options)?,
         )),
+    }
+}
+
+#[cfg(test)]
+mod oom_tests {
+    use super::*;
+
+    #[test]
+    fn out_of_memory_errors_are_recognised() {
+        let rt = |m: &str| ModelError::Runtime(m.into());
+        assert!(is_out_of_memory(&rt(
+            "Non-zero status code returned while running Gemm node. 8007000E Not enough memory resources"
+        )));
+        assert!(is_out_of_memory(&rt("std::bad_alloc")));
+        assert!(!is_out_of_memory(&rt("invalid input shape")));
+        assert!(!is_out_of_memory(&ModelError::Cancelled));
     }
 }
