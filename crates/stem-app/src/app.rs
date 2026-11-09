@@ -712,16 +712,15 @@ impl StemApp {
         let audio = Arc::new(audio);
         self.player.load(audio.clone());
         let mut analysis = out.analysis;
-        // Keep a halve / double the user picked last time.
-        if let (Some(a), Some(saved)) = (
+        // Keep a halve / double and a grid nudge the user picked last time.
+        if let (Some(a), Some(h)) = (
             &mut analysis,
             self.settings
                 .history
                 .iter()
-                .find(|h| h.out_dir == out.out_dir)
-                .and_then(|h| h.bpm),
+                .find(|h| h.out_dir == out.out_dir),
         ) {
-            a.apply_saved_bpm(saved);
+            a.restore(h.bpm, h.grid_nudge);
         }
         let timeline = crate::timeline::Timeline::new(duration, audio.clone());
         let chop = crate::chop::ChopState::load(&out.out_dir);
@@ -1155,6 +1154,7 @@ impl StemApp {
                         duration_secs: out.stems.first().map_or(0.0, |s| s.audio.duration_secs()),
                         bpm,
                         key,
+                        grid_nudge: None,
                     };
                     self.settings.push_history(entry.clone());
                     self.toasts

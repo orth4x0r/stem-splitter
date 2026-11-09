@@ -9,6 +9,7 @@ pub mod pads;
 pub mod paint;
 pub mod progress;
 pub mod sheet;
+pub mod structure;
 pub mod toast;
 pub mod waveform_view;
 
