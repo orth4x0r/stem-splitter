@@ -163,8 +163,8 @@ const PERSONAL_USE: &[Entry] = &[
         // dereverb_mdx23c_sdr_6.9096.ckpt (= MDX23C-De-Reverb-aufr33-jarredou.ckpt), sha256
         // eae2471b7077... (UVR / audio-separator; noblebarkrr/mvsepless_resources).
         url: our_url!("mdx23c_dereverb.onnx"),
-        sha256: Some("d7e80d0c2f3a3eaf6bd91c6153266079507573ff7b4295687bbe5e7bea639671"),
-        size_bytes: 448_157_208,
+        sha256: Some("15fed3477e3074eb40a410cbaae31708b420615412701ef73df1e819b89ecbeb"),
+        size_bytes: 448_266_897,
         license: "Personal use only: no stated licence (aufr33 & jarredou published the weights \
                   without terms; distributed through UVR and audio-separator). Code: MIT \
                   (ZFTurbo/Music-Source-Separation-Training)",
