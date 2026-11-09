@@ -128,9 +128,9 @@ impl Backend {
 // ---- demo data -----------------------------------------------------------------------------
 
 fn demo_registry() -> Vec<ModelInfo> {
-    vec![
+    let mut models = vec![
         ModelInfo {
-            id: "htdemucs-4s",
+            id: "htdemucs",
             name: "HTDemucs 4-stem",
             description: "The all-rounder. Vocals, drums, bass and everything else.",
             stems: vec![
@@ -205,7 +205,14 @@ fn demo_registry() -> Vec<ModelInfo> {
             size_bytes: 54_200_000,
             license: "Apache-2.0",
         },
-    ]
+    ];
+    // The models the built-in presets use (catalog data only; nothing is downloaded).
+    models.extend(
+        ["mel-roformer-kim", "mdx-kim-vocal-2", "scnet"]
+            .into_iter()
+            .filter_map(stem_models::find_model),
+    );
+    models
 }
 
 fn demo_devices() -> Vec<(Device, String)> {

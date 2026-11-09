@@ -4483,6 +4483,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "sha2",
  "stem-audio",
  "stem-fetch",
  "stem-models",
@@ -4500,6 +4501,7 @@ dependencies = [
  "hound",
  "realfft",
  "rubato",
+ "serde",
  "symphonia 0.6.1",
  "thiserror 2.0.21",
 ]

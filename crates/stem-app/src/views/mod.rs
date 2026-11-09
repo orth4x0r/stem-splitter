@@ -10,6 +10,7 @@ mod library;
 pub mod midi;
 mod models;
 mod models_dl;
+pub mod presets;
 mod progress;
 mod queue;
 mod results;
@@ -108,6 +109,7 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     scroll_fades(ui.painter(), area);
 
     export_dialog::show(app, ui.ctx());
+    presets::editor(app, ui.ctx());
     kit::show(app, ui.ctx());
     midi::show(app, ui.ctx());
 

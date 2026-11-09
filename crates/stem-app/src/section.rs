@@ -633,6 +633,7 @@ mod tests {
             demo: true,
             range: None,
             title: None,
+            chain: None,
         };
         let wait = |want_done: bool| -> Result<AppEvent, String> {
             loop {

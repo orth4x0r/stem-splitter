@@ -17,7 +17,7 @@ use crate::pipeline::{
 };
 use crate::player::Player;
 use crate::queue::{ItemStatus, Queue};
-use crate::settings::{HistoryEntry, Settings, now_unix};
+use crate::settings::{HistoryEntry, Preset, Settings, now_unix};
 use crate::shot::Shot;
 use crate::waveform::Envelope;
 use crate::widgets::drag_handle::PillAction;
@@ -189,6 +189,10 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// Size of the stem cache in bytes; `None` = not measured yet.
+    pub stem_cache_size: Option<u64>,
+    /// The open preset editor.
+    pub preset_editor: Option<crate::views::presets::PresetEditor>,
     /// The open "→ MIDI" sheet.
     pub midi: Option<crate::midi::MidiSheet>,
     pub midi_prefs: crate::midi::MidiPrefs,
@@ -266,6 +270,8 @@ impl StemApp {
             dragged_out: (Vec::new(), 0.0),
             ffmpeg: FfmpegState::default(),
             downloads_size: None,
+            stem_cache_size: None,
+            preset_editor: None,
             dsp: crate::fx::Fx::new(cc.egui_ctx.clone()),
             fx: crate::effects::Fx::default(),
             splash: crate::splash::Splash::new(false),
@@ -341,11 +347,24 @@ impl StemApp {
         now: f64,
         preparing: bool,
     ) -> Option<(u64, Arc<AtomicBool>, JobRequest)> {
-        let Some(model) = self
-            .backend
-            .model(self.settings.model_id.as_deref())
-            .cloned()
-        else {
+        let chain = match self.settings.active_preset() {
+            Some(preset) => match self.chain_spec(&preset) {
+                Ok(spec) => Some(spec),
+                Err(e) => {
+                    self.toasts.error(format!("Can't run “{}”", preset.name), e);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let model = match &chain {
+            Some(spec) => spec.models.first().cloned(),
+            None => self
+                .backend
+                .model(self.settings.model_id.as_deref())
+                .cloned(),
+        };
+        let Some(model) = model else {
             self.toasts
                 .error("No models available", "The model registry is empty.");
             return None;
@@ -357,12 +376,19 @@ impl StemApp {
         let id = self.next_job_id;
         self.next_job_id += 1;
         let cancel = Arc::new(AtomicBool::new(false));
+        let (model_name, stems) = match &chain {
+            Some(spec) => (
+                spec.name.clone(),
+                spec.plan().map(|p| p.kinds()).unwrap_or_default(),
+            ),
+            None => (model.name.to_owned(), model.stems.clone()),
+        };
         self.job = Some(RunningJob {
             id,
             title: title.clone().unwrap_or_else(|| source.provisional_title()),
             source,
-            model_name: model.name.to_owned(),
-            stems: model.stems.clone(),
+            model_name,
+            stems,
             stage: if preparing || matches!(input, InputSource::Url(_)) {
                 Stage::Fetching
             } else {
@@ -389,6 +415,7 @@ impl StemApp {
             demo: self.demo(),
             range: None,
             title,
+            chain,
         };
         Some((id, cancel, req))
     }
@@ -470,6 +497,46 @@ impl StemApp {
             now,
             None,
         );
+    }
+
+    /// Resolve a preset's models; fails if one is unknown or not available yet.
+    pub fn chain_spec(&self, preset: &Preset) -> Result<pipeline::chain::ChainSpec, String> {
+        let mut models = Vec::new();
+        for id in preset.chain.model_ids() {
+            let m = self
+                .backend
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .ok_or_else(|| format!("model “{id}” isn't in this version"))?;
+            if !self.backend.is_available(m) {
+                return Err(format!(
+                    "{} isn't hosted yet; export it into the models folder first",
+                    m.name
+                ));
+            }
+            models.push(m.clone());
+        }
+        let spec = pipeline::chain::ChainSpec {
+            name: preset.name.clone(),
+            chain: preset.chain.clone(),
+            models,
+            use_cache: self.settings.stem_cache,
+            cache_limit: self.settings.stem_cache_limit(),
+        };
+        spec.plan()?;
+        Ok(spec)
+    }
+
+    /// Use a preset for the next splits (`None` = back to the single model).
+    pub fn pick_preset(&mut self, id: Option<String>) {
+        self.settings.preset_id = id;
+    }
+
+    /// Use a single model for the next splits.
+    pub fn pick_model(&mut self, id: &str) {
+        self.settings.model_id = Some(id.to_owned());
+        self.settings.preset_id = None;
     }
 
     pub fn start_from_input(&mut self, now: f64) {
@@ -740,6 +807,31 @@ impl StemApp {
             Err(e) => self.toasts.error("Couldn't clear the cache", e.to_string()),
         }
         self.downloads_size = None;
+    }
+
+    pub fn stem_cache_dir(&self) -> PathBuf {
+        pipeline::cache::dir(&self.backend.paths, self.demo())
+    }
+
+    /// Size of the stem cache (measured once, then cached until it changes).
+    pub fn stem_cache_size(&mut self) -> u64 {
+        if self.stem_cache_size.is_none() {
+            let dir = self.stem_cache_dir();
+            self.stem_cache_size = Some(crate::paths::dir_size(&dir));
+        }
+        self.stem_cache_size.unwrap_or(0)
+    }
+
+    pub fn clear_stem_cache(&mut self) {
+        let dir = self.stem_cache_dir();
+        match crate::paths::clear_dir(&dir) {
+            Ok(n) => self.toasts.success(
+                "Stem cache cleared",
+                format!("Freed {}", crate::backend::human_bytes(n)),
+            ),
+            Err(e) => self.toasts.error("Couldn't clear the cache", e.to_string()),
+        }
+        self.stem_cache_size = None;
     }
 
     pub fn update_ytdlp(&mut self) {
@@ -1021,6 +1113,7 @@ impl StemApp {
                 let source = job.source.display();
                 self.job = None;
                 self.downloads_size = None;
+                self.stem_cache_size = None;
                 let n = out.stems.len();
                 let (bpm, key) = out.analysis.as_ref().map_or((None, None), |a| {
                     (a.bpm(), a.key.as_ref().map(|k| k.name()))

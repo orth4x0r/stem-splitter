@@ -36,6 +36,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         super::queue::panel(app, ui);
         drop_zone(app, ui, now, if compact { 186.0 } else { 220.0 });
         ui.add_space(if compact { 20.0 } else { 28.0 });
+        super::presets::strip(app, ui);
+        ui.add_space(if compact { 8.0 } else { 14.0 });
         model_strip(app, ui);
         ui.add_space(if compact { 20.0 } else { 28.0 });
         recent(app, ui, now);
@@ -497,10 +499,12 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("No models registered yet.").color(theme::TEXT_DIM));
         return;
     }
+    // A preset in use takes over from the single model.
     let selected = app
         .backend
         .model(app.settings.model_id.as_deref())
-        .map(|m| m.id);
+        .map(|m| m.id)
+        .filter(|_| app.settings.active_preset().is_none());
     let n = models.len() as f32;
     let gap = 12.0;
     let cw = (ui.available_width() - gap * (n - 1.0)) / n;
@@ -513,7 +517,7 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_text(m.description);
             if resp.clicked() {
-                app.settings.model_id = Some(m.id.to_owned());
+                app.pick_model(m.id);
             }
             let sel = selected == Some(m.id);
             let enter = motion::ease_out_back(motion::appear(

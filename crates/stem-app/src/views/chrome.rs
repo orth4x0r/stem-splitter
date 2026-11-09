@@ -151,10 +151,13 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
 
             // Right side status chips.
             let mut right = rect.right() - 24.0;
-            let model = app
-                .backend
-                .model(app.settings.model_id.as_deref())
-                .map_or("No model".to_owned(), |m| m.name.to_owned());
+            let model = match app.settings.active_preset() {
+                Some(p) => p.name,
+                None => app
+                    .backend
+                    .model(app.settings.model_id.as_deref())
+                    .map_or("No model".to_owned(), |m| m.name.to_owned()),
+            };
             let device = app.backend.device_name(app.settings.device);
             let device_short = device.replace(" (DirectML)", "");
             for (icon, text, color, page, tip) in [
