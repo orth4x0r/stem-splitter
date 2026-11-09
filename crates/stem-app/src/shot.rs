@@ -6,7 +6,11 @@
 //! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat),
 //! transform (Transform panel with a rendered preview), kit (drum-kit sheet),
 //! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
-//! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
+//! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`,
+//! `STEM_SHOT_IDLE=1` (stage the scene but never capture: for idle-CPU checks).
+//! Polish scenes: midi-play (fake audition playhead on the roll), transform-render (a render
+//! in flight), exported (chop view just after an export: shimmer and micro-burst), playing
+//! (results with a staged playhead: the BPM chip pulses on the beat).
 //! Section scenes: section (the pre-split picker), section-loading (fetch/decode before it),
 //! section-results (results of a section split, with "Re-split selection"), section-settings
 //! (the naming template with tokens), section-home (home with "Pick a section" on).
@@ -41,14 +45,28 @@ pub struct Shot {
     requested: bool,
     /// Seconds to wait before capturing.
     delay: f64,
+    /// Polish variants staged on top of a base scene: "midi-play", "transform-render",
+    /// "exported" (empty for plain scenes).
+    variant: String,
+    fired: bool,
 }
 
 impl Shot {
     pub fn from_env() -> Option<Self> {
         let path = std::env::var_os("STEM_SHOT")?;
+        let scene = std::env::var("STEM_SCENE").unwrap_or_else(|_| "home".into());
+        let (scene, variant) = match scene.as_str() {
+            "midi-play" => ("midi".to_owned(), scene),
+            "transform-render" => ("transform".to_owned(), scene),
+            "exported" => ("chop".to_owned(), scene),
+            "playing" => ("results".to_owned(), scene),
+            _ => (scene, String::new()),
+        };
         Some(Self {
             path: PathBuf::from(path),
-            scene: std::env::var("STEM_SCENE").unwrap_or_else(|_| "home".into()),
+            scene,
+            variant,
+            fired: false,
             force_drop: false,
             requested: false,
             delay: std::env::var("STEM_SHOT_DELAY")
@@ -363,6 +381,10 @@ impl Shot {
     /// Screenshots ignore the real (virtual-display) pointer, so nothing looks hovered by
     /// accident. `STEM_SHOT_POINTER=x,y` parks a pointer there instead, for hover shots.
     pub fn filter_input(&self, raw: &mut egui::RawInput) {
+        // Idle checks leave input alone: the synthetic pointer events would wake every frame.
+        if std::env::var_os("STEM_SHOT_IDLE").is_some() {
+            return;
+        }
         raw.events.retain(|e| {
             !matches!(
                 e,
@@ -382,6 +404,16 @@ impl Shot {
     }
 
     pub fn frame(&mut self, app: &mut StemApp, ctx: &egui::Context) {
+        // STEM_SHOT_IDLE=1: stage the scene, then leave the app alone (no capture, no forced
+        // repaints, silent meters), to measure idle CPU on that screen.
+        if std::env::var_os("STEM_SHOT_IDLE").is_some() {
+            if let Some(s) = &mut app.session {
+                for t in &mut s.tracks {
+                    t.level = 0.0;
+                }
+            }
+            return;
+        }
         ctx.request_repaint();
         let t = ctx.input(|i| i.time);
         // Chop scenes: finger-drum a few pads just before the capture so they flash.
@@ -412,6 +444,30 @@ impl Shot {
                 vec![3]
             };
             s.chop.hover = Some(if self.scene == "chop" { 7 } else { 5 });
+        }
+        // midi-play: a fake audition playhead sweeping the roll (trail, afterglow, key lights).
+        if self.variant == "midi-play" {
+            let at = (6.1 + (t - self.delay)).max(0.0);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/midi-playhead"), at));
+        }
+        // playing: the transport "plays" from 12.1 s (BPM chip beat pulse).
+        if self.variant == "playing" {
+            let at = 12.1 + (t - self.delay) + 0.07;
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/playing"), at));
+        }
+        // transform-render: a render in flight, creeping towards done.
+        if self.variant == "transform-render" {
+            let f = (0.35 + 0.05 * (t - self.delay)).clamp(0.05, 0.95) as f32;
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("stem-shot/tf-render"), f));
+        }
+        // exported: a chop export just finished (Export buttons shimmer, micro-burst).
+        if self.variant == "exported" && !self.fired && t > self.delay - 0.32 {
+            self.fired = true;
+            crate::widgets::buttons::export_succeeded();
+            app.fx.sparkle_at(
+                "chop-export",
+                (0..8).map(crate::widgets::pads::slice_color).collect(),
+            );
         }
         if !self.requested && t > self.delay {
             self.requested = true;

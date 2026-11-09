@@ -9,11 +9,11 @@ use crate::analysis::bpm_label;
 use crate::app::StemApp;
 use crate::backend::mmss_ms;
 use crate::fx::{self, Purpose, Target, TempoUnit};
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::drag_handle::{self, PillAction};
-use crate::widgets::icons::{self, Icon};
-use crate::widgets::{overline, progress};
+use crate::widgets::icons::Icon;
+use crate::widgets::{overline, paint, progress};
 
 const COL_GAP: f32 = 28.0;
 
@@ -41,7 +41,16 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut export = false;
     let mut cancel = false;
     let mut drag: Option<PillAction> = None;
-    let busy = app.dsp.render.as_ref().map(|r| (r.run.frac(), r.purpose));
+    let busy = app
+        .dsp
+        .render
+        .as_ref()
+        .map(|r| (r.run.frac(), r.purpose))
+        // Screenshot scenes can stage a render in flight.
+        .or_else(|| {
+            ui.data(|d| d.get_temp::<f32>(Id::unique("stem-shot/tf-render")))
+                .map(|f| (f, Purpose::Preview))
+        });
     let current = fx::current_key(app);
     let cached = match (&current, &app.dsp.last) {
         (Ok(k), Some(l)) => l.key == *k,
@@ -50,19 +59,160 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
     let playing = app.dsp.audition.playing("transform");
     let play_frac = app.dsp.audition.progress();
 
-    let resp = theme::card_frame()
-        .inner_margin(egui::Margin::symmetric(22, 18))
-        .show(ui, |ui| {
+    let summary = {
+        let u = &app.dsp.ui;
+        let t = u.transform(bpm, stem_kind);
+        summary_text(
+            &t,
+            bpm,
+            &kinds,
+            u,
+            sel_len
+                .filter(|_| u.target == Target::Selection)
+                .unwrap_or(duration),
+        )
+    };
+    // Narrow windows: the actions move to their own row under the controls.
+    let wide = ui.available_width() >= 1150.0;
+    let gap = if wide { COL_GAP } else { 14.0 };
+    let resp = paint::glass_card(
+        ui,
+        egui::Margin::symmetric(22, 18),
+        Some(theme::alpha(color, 0.07)),
+        |ui| {
             ui.set_width(ui.available_width());
+            let last = &app.dsp.last;
+            let last_export = &app.dsp.last_export;
             let u = &mut app.dsp.ui;
+            let mut actions = |ui: &mut egui::Ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(summary.as_str())
+                                .font(theme::mono(12.5))
+                                .color(theme::TEXT),
+                        )
+                        .extend(),
+                    );
+                    ui.add_space(8.0);
+                    match busy {
+                        Some((frac, purpose)) => {
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if Button::new("Cancel")
+                                        .kind(buttons::Kind::Danger)
+                                        .height(36.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        cancel = true;
+                                    }
+                                    let (r, _) = ui.allocate_exact_size(vec2(160.0, 44.0), Sense::hover());
+                                    let shown = motion::count_up(ui.ctx(), Id::unique("tf-render-pct"), frac * 100.0);
+                                    let p = ui.painter();
+                                    p.text(
+                                        pos2(r.left(), r.top() + 7.0),
+                                        Align2::LEFT_CENTER,
+                                        if purpose == Purpose::Preview { "Rendering preview" } else { "Rendering export" },
+                                        theme::semi(12.0),
+                                        theme::TEXT,
+                                    );
+                                    p.text(
+                                        pos2(r.right(), r.top() + 7.0),
+                                        Align2::RIGHT_CENTER,
+                                        format!("{shown:.0}%"),
+                                        theme::mono(12.5),
+                                        color,
+                                    );
+                                    let meter = Rect::from_min_max(pos2(r.left(), r.top() + 17.0), r.max);
+                                    progress::live_bar(p, meter, frac, now, color);
+                                });
+                            });
+                        }
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let enabled = current.is_ok();
+                                    let tip = match &current {
+                                        Ok(_) => "Write the result to Samples (selection) or Export (whole stem)",
+                                        Err(why) => why,
+                                    };
+                                    if Button::primary("Export")
+                                        .export_shimmer()
+                                        .icon(Icon::Export)
+                                        .enabled(enabled)
+                                        .tooltip(tip)
+                                        .height(40.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        export = true;
+                                    }
+                                    let label = if playing { "Stop" } else { "Preview" };
+                                    if Button::new(label)
+                                        .icon(if playing { Icon::Stop } else { Icon::Play })
+                                        .enabled(enabled)
+                                        .tooltip(if cached { "Play the rendered result again" } else { tip })
+                                        .height(40.0)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        preview = true;
+                                    }
+                                    if let Some(p) = &last_export {
+                                        let label = if crate::dragout::NATIVE { "Drag" } else { "Show" };
+                                        let w = drag_handle::pill_width(ui, label);
+                                        let (r, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
+                                        let pill = drag_handle::pill_rect(r.right(), r.center().y, w);
+                                        let tip = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                                        if let (_, Some(a)) = drag_handle::drag_pill(ui, pill, Id::unique("tf-drag"), label, color, &tip) {
+                                            drag = Some(a);
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    }
+                    ui.add_space(6.0);
+                    // Rendered result / playback line.
+                    let info = match (last, cached) {
+                        (Some(l), true) => {
+                            let dur = l.audio.duration_secs();
+                            if playing {
+                                format!(
+                                    "playing {} / {}",
+                                    mmss_ms(play_frac as f64 * dur),
+                                    mmss_ms(dur)
+                                )
+                            } else {
+                                format!("rendered {} in {:.1} s", mmss_ms(dur), l.secs)
+                            }
+                        }
+                        _ => match &current {
+                            Err(why) => why.to_string(),
+                            Ok(_) => "not rendered yet".to_owned(),
+                        },
+                    };
+                    faint(ui, &info);
+                    if playing {
+                        let (r, _) = ui.allocate_exact_size(vec2(200.0, 3.0), Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(r, CornerRadius::same(1), Color32::from_white_alpha(14));
+                        let fill = Rect::from_min_size(r.min, vec2(r.width() * play_frac.clamp(0.0, 1.0), 3.0));
+                        paint::glow(p, fill, 1, theme::alpha(color, 0.5), 6.0);
+                        p.rect_filled(fill, CornerRadius::same(1), color);
+                        paint::glow_circle(p, fill.right_center(), 2.5, theme::alpha(Color32::WHITE, 0.8), 6.0);
+                    }
+                });
+            };
             // ---- header
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(r.center(), 15.0, theme::alpha(color, 0.16));
-                icons::paint(ui.painter(), r.shrink(7.0), Icon::Sparkle, color);
+                let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
+                crate::widgets::icon_badge(ui.painter(), r, color, Icon::Sparkle);
                 ui.add_space(4.0);
+                let text_w = (ui.available_width() - 470.0).max(120.0);
                 ui.vertical(|ui| {
+                    ui.set_max_width(text_w);
                     ui.label(
                         egui::RichText::new("Transform")
                             .font(theme::semi(17.0))
@@ -75,6 +225,7 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                         .font(theme::regular(12.5))
                         .color(theme::TEXT_DIM),
                     );
+
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("tf-stem")
@@ -106,7 +257,7 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 // Tempo.
                 ui.vertical(|ui| {
-                    ui.set_width(250.0);
+                    ui.set_width(if wide { 250.0 } else { 220.0 });
                     overline(ui, "Tempo");
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -145,9 +296,7 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                             None => format!("no tempo detected  ·  ×{factor:.3}"),
                         };
                         faint(ui, &txt);
-                        if (factor - 1.0).abs() > 1e-4
-                            && link(ui, "reset").clicked()
-                        {
+                        if (factor - 1.0).abs() > 1e-4 && link(ui, "reset").clicked() {
                             u.percent = 100.0;
                             if let Some(b) = bpm {
                                 u.bpm = (b * 10.0).round() / 10.0;
@@ -155,13 +304,13 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                         }
                     });
                 });
-                ui.add_space(COL_GAP);
+                ui.add_space(gap);
                 divider(ui);
-                ui.add_space(COL_GAP);
+                ui.add_space(gap);
 
                 // Pitch.
                 ui.vertical(|ui| {
-                    ui.set_width(270.0);
+                    ui.set_width(if wide { 270.0 } else { 220.0 });
                     overline(ui, "Pitch");
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -214,20 +363,23 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                         None => faint(ui, "no key detected"),
                     });
                 });
-                ui.add_space(COL_GAP);
+                ui.add_space(gap);
                 divider(ui);
-                ui.add_space(COL_GAP);
+                ui.add_space(gap);
 
                 // Mode.
                 ui.vertical(|ui| {
-                    ui.set_width(300.0);
+                    ui.set_width(if wide { 300.0 } else { 210.0 });
                     overline(ui, "Mode");
                     ui.add_space(4.0);
                     buttons::segmented(
                         ui,
                         "tf-mode",
                         &mut u.mode,
-                        &[(SpeedMode::Keylock, "Keylock"), (SpeedMode::Varispeed, "Varispeed")],
+                        &[
+                            (SpeedMode::Keylock, "Keylock"),
+                            (SpeedMode::Varispeed, "Varispeed"),
+                        ],
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -256,128 +408,23 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                         );
                     });
                 });
-
-                // Actions.
-                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                    let t = u.transform(bpm, stem_kind);
-                    let summary = summary_text(&t, bpm, &kinds, u, sel_len.filter(|_| u.target == Target::Selection).unwrap_or(duration));
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(summary)
-                                .font(theme::mono(12.5))
-                                .color(theme::TEXT),
-                        )
-                        .extend(),
-                    );
-                    ui.add_space(8.0);
-                    match busy {
-                        Some((frac, purpose)) => {
-                            ui.horizontal(|ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if Button::new("Cancel")
-                                        .kind(buttons::Kind::Danger)
-                                        .height(36.0)
-                                        .show(ui)
-                                        .clicked()
-                                    {
-                                        cancel = true;
-                                    }
-                                    let (r, _) = ui.allocate_exact_size(vec2(200.0, 36.0), Sense::hover());
-                                    let bar = Rect::from_center_size(
-                                        pos2(r.center().x, r.bottom() - 6.0),
-                                        vec2(r.width(), 6.0),
-                                    );
-                                    progress::bar(ui.painter(), bar, Some(frac), now);
-                                    ui.painter().text(
-                                        pos2(r.left(), r.top() + 10.0),
-                                        Align2::LEFT_CENTER,
-                                        format!(
-                                            "{} {:.0}%",
-                                            if purpose == Purpose::Preview { "Rendering preview" } else { "Rendering export" },
-                                            frac * 100.0
-                                        ),
-                                        theme::regular(12.0),
-                                        theme::TEXT_DIM,
-                                    );
-                                });
-                            });
-                        }
-                        None => {
-                            ui.horizontal(|ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let enabled = current.is_ok();
-                                    let tip = match &current {
-                                        Ok(_) => "Write the result to Samples (selection) or Export (whole stem)",
-                                        Err(why) => why,
-                                    };
-                                    if Button::primary("Export")
-                                        .icon(Icon::Export)
-                                        .enabled(enabled)
-                                        .tooltip(tip)
-                                        .height(40.0)
-                                        .show(ui)
-                                        .clicked()
-                                    {
-                                        export = true;
-                                    }
-                                    let label = if playing { "Stop" } else { "Preview" };
-                                    if Button::new(label)
-                                        .icon(if playing { Icon::Stop } else { Icon::Play })
-                                        .enabled(enabled)
-                                        .tooltip(if cached { "Play the rendered result again" } else { tip })
-                                        .height(40.0)
-                                        .show(ui)
-                                        .clicked()
-                                    {
-                                        preview = true;
-                                    }
-                                    if let Some(p) = &app.dsp.last_export {
-                                        let label = if crate::dragout::NATIVE { "Drag" } else { "Show" };
-                                        let w = drag_handle::pill_width(ui, label);
-                                        let (r, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
-                                        let pill = drag_handle::pill_rect(r.right(), r.center().y, w);
-                                        let tip = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                                        if let (_, Some(a)) = drag_handle::drag_pill(ui, pill, Id::unique("tf-drag"), label, color, &tip) {
-                                            drag = Some(a);
-                                        }
-                                    }
-                                });
-                            });
-                        }
-                    }
-                    ui.add_space(6.0);
-                    // Rendered result / playback line.
-                    let info = match (&app.dsp.last, cached) {
-                        (Some(l), true) => {
-                            let dur = l.audio.duration_secs();
-                            if playing {
-                                format!(
-                                    "playing {} / {}",
-                                    mmss_ms(play_frac as f64 * dur),
-                                    mmss_ms(dur)
-                                )
-                            } else {
-                                format!("rendered {} in {:.1} s", mmss_ms(dur), l.secs)
-                            }
-                        }
-                        _ => match &current {
-                            Err(why) => why.to_string(),
-                            Ok(_) => "not rendered yet".to_owned(),
-                        },
-                    };
-                    faint(ui, &info);
-                    if playing {
-                        let (r, _) = ui.allocate_exact_size(vec2(200.0, 3.0), Sense::hover());
-                        ui.painter().rect_filled(r, CornerRadius::same(1), Color32::from_white_alpha(14));
-                        ui.painter().rect_filled(
-                            Rect::from_min_size(r.min, vec2(r.width() * play_frac.clamp(0.0, 1.0), 3.0)),
-                            CornerRadius::same(1),
-                            color,
-                        );
-                    }
-                });
+                if wide {
+                    actions(ui);
+                }
             });
-        });
+            if !wide {
+                ui.add_space(10.0);
+                let y = ui.cursor().top();
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y,
+                    Stroke::new(1.0, theme::alpha(theme::STROKE, 0.8)),
+                );
+                ui.add_space(10.0);
+                actions(ui);
+            }
+        },
+    );
 
     if app.dsp.scroll_to_panel {
         // Keep asking until the panel is on screen (the first frames have no layout yet).

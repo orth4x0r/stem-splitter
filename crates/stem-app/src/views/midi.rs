@@ -11,13 +11,15 @@ use stem_models::transcribe::QuantizeGrid;
 use crate::app::StemApp;
 use crate::backend::{mmss, mmss_ms};
 use crate::midi::{MidiSheet, MidiSource, Status, Wave, note_name};
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::drag_handle::{self, PillAction};
 use crate::widgets::icons::Icon;
+use crate::widgets::sheet::Sheet;
 use crate::widgets::toast::elide;
 use crate::widgets::{overline, paint};
 
+/// Piano-roll height on a roomy window; it gives way on short windows so the sheet fits.
 const ROLL_H: f32 = 340.0;
 const KEYS_W: f32 = 46.0;
 const RULER_H: f32 = 18.0;
@@ -131,23 +133,36 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
         });
     }
     let width = (ctx.content_rect().width() - 120.0).clamp(760.0, 1180.0);
-    let resp = egui::Modal::new(Id::unique("midi-sheet"))
-        .frame(theme::card_frame().inner_margin(egui::Margin::same(24)))
-        .backdrop_color(Color32::from_black_alpha(160))
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            header(ui, sheet, color, &mut actions);
-            ui.add_space(14.0);
-            let (roll, _) = ui.allocate_exact_size(vec2(width, ROLL_H), Sense::hover());
-            if let Some(t) = piano_roll(ui, roll, sheet, color) {
-                actions.push(Action::Play(t));
-            }
-            ui.add_space(14.0);
-            controls(ui, sheet, color, width, &mut actions);
-            ui.add_space(12.0);
-            footer(ui, sheet, &mut actions);
-        });
+    let mut anim = Sheet::begin(ctx, Id::unique("midi-sheet"));
+    let resp = anim.show(ctx, color, 24, |ui| {
+        ui.set_width(width);
+        header(ui, sheet, color, &mut actions);
+        ui.add_space(14.0);
+        let roll_h = (ui.ctx().content_rect().height() - 540.0).clamp(150.0, ROLL_H);
+        let (roll, _) = ui.allocate_exact_size(vec2(width, roll_h), Sense::hover());
+        if let Some(t) = piano_roll(ui, roll, sheet, color) {
+            actions.push(Action::Play(t));
+        }
+        ui.add_space(14.0);
+        controls(ui, sheet, color, width, &mut actions);
+        ui.add_space(12.0);
+        footer(ui, sheet, &mut actions);
+    });
     if resp.should_close() {
+        actions.push(Action::Close);
+    }
+    if anim.closing {
+        // Exit animation playing: the sheet is going away, ignore its buttons.
+        actions.clear();
+    }
+    if actions.iter().any(|a| matches!(a, Action::Close)) {
+        anim.close(ctx);
+        actions.retain(|a| !matches!(a, Action::Close | Action::Play(_)));
+        if sheet.is_previewing() {
+            actions.push(Action::Stop);
+        }
+    }
+    if anim.finished() {
         actions.push(Action::Close);
     }
 
@@ -159,12 +174,15 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                 app.midi = None;
             }
             Action::Export => match sheet.export() {
-                Ok(p) => app.toasts.success(
-                    "MIDI exported",
-                    p.file_name()
-                        .map(|f| f.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                ),
+                Ok(p) => {
+                    crate::widgets::buttons::export_succeeded();
+                    app.toasts.success(
+                        "MIDI exported",
+                        p.file_name()
+                            .map(|f| f.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                }
                 Err(e) => app.toasts.error("MIDI export failed", e),
             },
             Action::Drag(a) => {
@@ -287,12 +305,20 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
     let dur = sheet.src.duration().max(0.1);
     let resp = ui.interact(rect, Id::unique("midi-roll"), Sense::click_and_drag());
     let p = ui.painter().with_clip_rect(rect);
+    let now = ui.input(|i| i.time);
     p.rect(
         rect,
         CornerRadius::same(14),
         Color32::from_rgb(11, 11, 19),
         Stroke::new(1.0, theme::STROKE),
         StrokeKind::Inside,
+    );
+    // Depth: a faint stem-coloured floor light and darker corners.
+    paint::soft_disc(
+        &p,
+        pos2(rect.center().x, rect.bottom() + 40.0),
+        rect.width() * 0.45,
+        theme::alpha(color, 0.10),
     );
     let keys = Rect::from_min_max(
         rect.min + vec2(0.0, RULER_H),
@@ -329,8 +355,10 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
     if resp.dragged() {
         sheet.view_start -= resp.drag_delta().x as f64 / roll.width() as f64 * sheet.view_span;
     }
-    // Follow the audition.
-    let playhead = sheet.preview_pos();
+    // Follow the audition. (Screenshot scenes can park a fake playhead in temp memory.)
+    let playhead = sheet
+        .preview_pos()
+        .or_else(|| ui.data(|d| d.get_temp::<f64>(Id::unique("stem-shot/midi-playhead"))));
     if let Some(t) = playhead
         && (t > sheet.view_start + sheet.view_span || t < sheet.view_start)
     {
@@ -390,6 +418,7 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
                     pos2(keys.left() + 8.0, y_of(n.pitch)),
                     vec2(KEYS_W - 10.0, row_h),
                 );
+                paint::glow(&p, k, 2, theme::alpha(color, 0.6), 8.0);
                 p.rect_filled(k.shrink2(vec2(0.0, 0.5)), 2.0, color);
             }
         }
@@ -453,6 +482,35 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
         Rect::from_min_max(pos2(x0, y + 0.75), pos2(x1, y + row_h - 0.75))
     };
     let radius = CornerRadius::same((row_h * 0.3).clamp(1.0, 4.0) as u8);
+    // Fresh notes sweep in from the left (on open and after every re-detect).
+    let reveal = if matches!(sheet.status, Status::Ready) {
+        motion::ease_in_out(motion::appear(
+            ui.ctx(),
+            Id::unique((
+                "midi-reveal",
+                sheet.notes.len(),
+                sheet.prefs.quantize.map(|q| q.per_beat()),
+            )),
+            0.1,
+            0.7,
+        ))
+    } else {
+        1.0
+    };
+    let reveal_x = roll.left() + (roll.width() + 60.0) * reveal;
+    // Playhead trail: a fading wash of the stem colour behind the playhead.
+    if let Some(t) = playhead {
+        let x = x_of(t);
+        let len = 90.0f32.min(x - roll.left()).max(0.0);
+        if len > 1.0 {
+            paint::hgradient(
+                &p,
+                Rect::from_min_max(pos2(x - len, roll.top()), pos2(x, roll.bottom())),
+                Color32::TRANSPARENT,
+                theme::alpha(color, 0.16),
+            );
+        }
+    }
     if sheet.prefs.quantize.is_some() {
         for n in &sheet.raw {
             if (lo..=hi).contains(&n.pitch) && n.end >= v0 && n.start <= v0 + span {
@@ -474,24 +532,72 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
             continue;
         }
         let r = note_rect(n.start, n.end, n.pitch);
+        let shown = ((reveal_x - r.left()) / 60.0).clamp(0.0, 1.0);
+        if shown <= 0.0 {
+            continue;
+        }
+        let mut p = p.clone();
+        p.multiply_opacity(shown);
+        let r = Rect::from_min_max(
+            r.min,
+            pos2(
+                (r.left() + r.width() * motion::ease_out(shown)).max(r.left() + 2.0),
+                r.bottom(),
+            ),
+        );
         let v = n.velocity() as f32 / 127.0;
         let on = playhead.is_some_and(|t| n.start <= t && t < n.end);
-        if v > 0.45 || on {
+        // Afterglow: a note that just ended keeps glowing for a moment.
+        let after = playhead.map_or(0.0, |t| {
+            let d = (t - n.end) as f32;
+            if (0.0..0.45).contains(&d) {
+                1.0 - d / 0.45
+            } else {
+                0.0
+            }
+        });
+        // Onset: how recently the playhead struck this note.
+        let struck = playhead.map_or(1.0, |t| ((t - n.start) as f32 / 0.3).max(0.0));
+        if on || after > 0.0 {
+            let k = if on { 1.0 } else { after };
             paint::glow(
                 &p,
                 r,
                 radius,
-                theme::alpha(color, if on { 0.7 } else { 0.32 * v }),
-                if on { 14.0 } else { 8.0 },
+                theme::alpha(color, 0.75 * k),
+                10.0 + 10.0 * k,
+            );
+        } else if v > 0.45 {
+            paint::glow(&p, r, radius, theme::alpha(color, 0.32 * v), 8.0);
+        }
+        if on && struck < 1.0 && !motion::reduced() {
+            let e = motion::ease_out(struck);
+            p.rect_stroke(
+                r.expand(2.0 + 10.0 * e),
+                CornerRadius::same((radius.nw as f32 + 6.0 * e) as u8),
+                Stroke::new(
+                    1.5 * (1.0 - struck),
+                    theme::alpha(Color32::WHITE, 0.8 * (1.0 - struck)),
+                ),
+                StrokeKind::Middle,
             );
         }
         let base = theme::lerp_color(Color32::from_rgb(34, 30, 54), color, 0.3 + 0.7 * v);
         let fill = if on {
             theme::lerp_color(base, Color32::WHITE, 0.45)
         } else {
-            base
+            theme::lerp_color(base, Color32::WHITE, 0.3 * after)
         };
         p.rect_filled(r, radius, fill);
+        // The sounding part of a held note burns brighter than the rest.
+        if on && let Some(t) = playhead {
+            let px = x_of(t).clamp(r.left(), r.right());
+            p.rect_filled(
+                Rect::from_min_max(r.min, pos2(px, r.bottom())),
+                radius,
+                theme::alpha(Color32::WHITE, 0.25),
+            );
+        }
         if r.height() > 4.0 {
             let top = Rect::from_min_size(r.min, vec2(r.width(), (r.height() * 0.35).min(3.0)));
             p.rect_filled(
@@ -511,21 +617,43 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
         }
     }
 
-    // Playhead.
+    if reveal > 0.0 && reveal < 1.0 {
+        let x = reveal_x - 30.0;
+        paint::glow(
+            &p,
+            Rect::from_min_max(pos2(x - 1.0, roll.top()), pos2(x + 1.0, roll.bottom())),
+            0,
+            theme::alpha(color, 0.5 * (1.0 - reveal)),
+            14.0,
+        );
+    }
+
+    // Playhead: a glowing line with a bright cap on the ruler.
     if let Some(t) = playhead {
         let x = x_of(t);
         paint::glow(
             &p,
             Rect::from_min_max(pos2(x - 1.0, roll.top()), pos2(x + 1.0, roll.bottom())),
             0,
-            theme::alpha(Color32::WHITE, 0.35),
-            8.0,
+            theme::alpha(color, 0.45),
+            12.0,
         );
         p.vline(
             x,
             rect.top()..=roll.bottom(),
             Stroke::new(1.5, Color32::WHITE),
         );
+        let cap = vec![
+            pos2(x - 5.0, ruler.top() + 3.0),
+            pos2(x + 5.0, ruler.top() + 3.0),
+            pos2(x, ruler.bottom() - 2.0),
+        ];
+        p.add(egui::Shape::convex_polygon(
+            cap,
+            Color32::WHITE,
+            Stroke::NONE,
+        ));
+        let _ = now;
     } else if let Some(h) = hover
         && !sheet.is_running()
     {
@@ -822,6 +950,7 @@ fn controls(
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if Button::primary("Export .mid")
+                    .export_shimmer()
                     .icon(Icon::Export)
                     .enabled(ready)
                     .height(38.0)
@@ -864,14 +993,18 @@ fn controls(
 }
 
 fn footer(ui: &mut Ui, sheet: &mut MidiSheet, actions: &mut Vec<Action>) {
+    // Narrow sheets keep only the how-to, so the hint never runs into the GPU switch.
+    let hint = if ui.available_width() < 1100.0 {
+        "Click the roll to play from there · Ctrl+wheel to zoom."
+    } else {
+        "Basic Pitch works best on bass and lead lines; dense chords come out approximate.  \
+         Click the roll to play from there · Ctrl+wheel to zoom."
+    };
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(
-                "Basic Pitch works best on bass and lead lines; dense chords come out approximate.  \
-                 Click the roll to play from there · Ctrl+wheel to zoom.",
-            )
-            .font(theme::regular(12.0))
-            .color(theme::TEXT_FAINT),
+            egui::RichText::new(hint)
+                .font(theme::regular(12.0))
+                .color(theme::TEXT_FAINT),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut gpu = sheet.prefs.gpu;
@@ -889,7 +1022,9 @@ fn footer(ui: &mut Ui, sheet: &mut MidiSheet, actions: &mut Vec<Action>) {
                     .font(theme::regular(12.0))
                     .color(theme::TEXT_DIM),
             )
-            .on_hover_text("Run the model with DirectML. It is tiny, so the CPU is usually just as fast.");
+            .on_hover_text(
+                "Run the model with DirectML. It is tiny, so the CPU is usually just as fast.",
+            );
         });
     });
 }

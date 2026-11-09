@@ -50,24 +50,38 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut new_split = false;
     let mut resplit = false;
     let mut chop_open = s.chop.open;
+    // Narrow windows: the header buttons shrink to icons so the title column keeps its room.
+    let compact = ui.available_width() < 1000.0;
+    let right_w = if compact { 350.0 } else { 730.0 };
+    let left_w = (ui.available_width() - right_w).max(240.0);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
+            ui.set_max_width(left_w);
             ui.label(
-                egui::RichText::new(elide(&title, 48))
+                egui::RichText::new(elide(&title, ((left_w / 15.5) as usize).clamp(12, 48)))
                     .font(theme::bold(28.0))
                     .color(theme::TEXT),
             );
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(meta)
-                        .font(theme::mono(12.5))
-                        .color(theme::TEXT_DIM),
-                );
-                ui.label(
-                    egui::RichText::new(elide(&out_dir.display().to_string(), 32))
-                        .font(theme::mono(12.5))
-                        .color(theme::TEXT_FAINT),
-                );
+                let meta_w = ui
+                    .label(
+                        egui::RichText::new(meta)
+                            .font(theme::mono(12.5))
+                            .color(theme::TEXT_DIM),
+                    )
+                    .rect
+                    .width();
+                // The output path gets whatever is left (mono ~7.6 px a glyph).
+                let chars = ((left_w - meta_w - 16.0) / 7.6) as usize;
+                let path = out_dir.display().to_string();
+                if chars >= 12 {
+                    ui.label(
+                        egui::RichText::new(elide(&path, chars.min(48)))
+                            .font(theme::mono(12.5))
+                            .color(theme::TEXT_FAINT),
+                    )
+                    .on_hover_text(&path);
+                }
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -79,22 +93,36 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             });
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            new_split = Button::ghost("New split")
-                .icon(Icon::Plus)
-                .show(ui)
-                .clicked();
-            export_all = Button::new("Export stems")
-                .icon(Icon::Export)
-                .show(ui)
-                .clicked();
-            open_folder = Button::new("Open folder")
-                .icon(Icon::Folder)
-                .show(ui)
-                .clicked();
-            resplit = Button::new("Re-split")
+            let hdr = |l: &'static str, b: Button<'static>| -> Button<'static> {
+                if compact { b.tooltip(l) } else { b }
+            };
+            let label = |l: &'static str| if compact { "" } else { l };
+            new_split = hdr(
+                "New split",
+                Button::ghost(label("New split")).icon(Icon::Plus),
+            )
+            .show(ui)
+            .clicked();
+            export_all = hdr(
+                "Export stems",
+                Button::new(label("Export stems"))
+                    .export_shimmer()
+                    .icon(Icon::Export),
+            )
+            .show(ui)
+            .clicked();
+            open_folder = hdr(
+                "Open folder",
+                Button::new(label("Open folder")).icon(Icon::Folder),
+            )
+            .show(ui)
+            .clicked();
+            resplit = Button::new(label("Re-split"))
                 .icon(Icon::Scissors)
                 .enabled(has_sel)
-                .tooltip("Split just the selected part again, from the original audio (select a region first)")
+                .tooltip(
+                    "Split just the selected part again, from the original audio (select a region first)",
+                )
                 .show(ui)
                 .clicked();
             ui.add_space(8.0);
@@ -260,10 +288,19 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     18.0,
                 );
             }
+            // The card breathes with the stem's level while it plays.
+            crate::widgets::meter::level_glow(
+                p,
+                card,
+                CornerRadius::same(16),
+                color,
+                if audible { tr.level } else { 0.0 },
+            );
+            paint::glass(p, card, CornerRadius::same(16), None, hover * 0.6);
             p.rect(
                 card,
                 CornerRadius::same(16),
-                theme::lerp_color(theme::CARD, Color32::from_rgb(24, 24, 40), hover),
+                Color32::TRANSPARENT,
                 Stroke::new(
                     1.0,
                     theme::lerp_color(theme::STROKE, color, 0.15 + 0.5 * sel_a + 0.15 * hover),
@@ -649,6 +686,8 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
             let audible: Vec<usize> = (0..s.tracks.len()).filter(|i| s.audible(*i)).collect();
             let sel_track = s.sel_track;
 
+            // Narrow windows: shorter labels so the two halves of the bar never collide.
+            let compact = ui.available_width() < 1150.0;
             ui.horizontal_centered(|ui| {
                 // Play button.
                 let (r, resp) = ui.allocate_exact_size(vec2(50.0, 50.0), Sense::click());
@@ -734,16 +773,18 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                                 .font(theme::semi(10.5))
                                 .color(theme::TEXT_FAINT),
                         );
+                        let range = format!("{} → {}", mmss_ms(a), mmss_ms(b));
+                        let text = if compact {
+                            format!("{:.2} s", b - a)
+                        } else {
+                            format!("{range}   {:.2} s", b - a)
+                        };
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} → {}   {:.2} s",
-                                mmss_ms(a),
-                                mmss_ms(b),
-                                b - a
-                            ))
-                            .font(theme::mono(13.0))
-                            .color(theme::TEXT),
-                        );
+                            egui::RichText::new(text)
+                                .font(theme::mono(13.0))
+                                .color(theme::TEXT),
+                        )
+                        .on_hover_text(range);
                     });
                     if buttons::icon_button(
                         ui,
@@ -768,8 +809,13 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let has = selection.is_some();
-                    let label = format!("Export {} sample", sel_kind.map_or("stem", |k| k.label()));
+                    let label = if compact {
+                        "Export sample".to_owned()
+                    } else {
+                        format!("Export {} sample", sel_kind.map_or("stem", |k| k.label()))
+                    };
                     if Button::primary(&label)
+                        .export_shimmer()
                         .icon(Icon::Scissors)
                         .enabled(has)
                         .height(42.0)
@@ -787,7 +833,8 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                     {
                         super::midi::open_sheet(app, sel_track, true, ui.ctx());
                     }
-                    if Button::new("Export mix")
+                    if Button::new(if compact { "" } else { "Export mix" })
+                        .export_shimmer()
                         .icon(Icon::Headphones)
                         .enabled(has && !audible.is_empty())
                         .tooltip("Export the selection with every audible stem mixed down")
@@ -798,10 +845,11 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                         app.export_selection(audible.clone());
                     }
                     if has {
-                        let label = if crate::dragout::NATIVE {
-                            "Drag sample"
-                        } else {
-                            "Show sample"
+                        let label = match (crate::dragout::NATIVE, compact) {
+                            (true, false) => "Drag sample",
+                            (false, false) => "Show sample",
+                            (true, true) => "Drag",
+                            (false, true) => "Show",
                         };
                         let w = drag_handle::pill_width(ui, label) + 8.0;
                         let (r, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());

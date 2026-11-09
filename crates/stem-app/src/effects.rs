@@ -26,11 +26,17 @@ pub struct Fx {
     pending: Option<BurstSpec>,
     /// Smoothed master output level, 0..1.
     pub master: f32,
+    /// Screen positions views register for micro-bursts (e.g. an Export button).
+    anchors: Vec<(&'static str, Pos2)>,
 }
 
 pub struct BurstSpec {
     pub colors: Vec<Color32>,
     pub label: String,
+    /// Where it starts (`None` = middle of the content area).
+    pub at: Option<Pos2>,
+    /// A small, quick sparkle instead of the full celebration.
+    pub micro: bool,
 }
 
 impl Fx {
@@ -48,6 +54,31 @@ impl Fx {
         self.pending = Some(BurstSpec {
             colors,
             label: label.into(),
+            at: None,
+            micro: false,
+        });
+    }
+
+    /// Remember where `key` sits on screen (call each frame it is drawn).
+    pub fn set_anchor(&mut self, key: &'static str, pos: Pos2) {
+        match self.anchors.iter_mut().find(|(k, _)| *k == key) {
+            Some(a) => a.1 = pos,
+            None => self.anchors.push((key, pos)),
+        }
+    }
+
+    /// A satisfying little sparkle from anchor `key` (a chop or kit export finishing).
+    /// Doesn't replace a full celebration that is still running.
+    pub fn sparkle_at(&mut self, key: &str, colors: Vec<Color32>) {
+        if self.burst.as_ref().is_some_and(|b| !b.micro) {
+            return;
+        }
+        let at = self.anchors.iter().find(|(k, _)| *k == key).map(|a| a.1);
+        self.pending = Some(BurstSpec {
+            colors,
+            label: String::new(),
+            at,
+            micro: true,
         });
     }
 
@@ -204,9 +235,12 @@ struct Burst {
     colors: Vec<Color32>,
     label: String,
     last: f64,
+    micro: bool,
+    len: f32,
 }
 
 const BURST_LEN: f32 = 2.6;
+const MICRO_LEN: f32 = 1.3;
 
 /// Tiny deterministic RNG (xorshift), so screenshots are reproducible.
 struct Rng(u32);
@@ -228,10 +262,46 @@ impl Rng {
 pub fn show_burst(ctx: &egui::Context, fx: &mut Fx, area: Rect) {
     let now = ctx.input(|i| i.time);
     if let Some(spec) = fx.pending.take() {
-        let origin = pos2(area.center().x, area.top() + area.height() * 0.42);
+        let origin = spec
+            .at
+            .unwrap_or(pos2(area.center().x, area.top() + area.height() * 0.42));
         let mut rng = Rng(0x9e37_79b9);
         let mut parts = Vec::new();
-        if !motion::reduced() {
+        if spec.micro && !motion::reduced() {
+            let colors = if spec.colors.is_empty() {
+                theme::ACCENT_GRADIENT.to_vec()
+            } else {
+                spec.colors.clone()
+            };
+            for i in 0..40 {
+                let a = -PI / 2.0 + rng.range(-1.6, 1.6);
+                let sp = rng.range(160.0, 460.0);
+                parts.push(Particle {
+                    p: origin + vec2(rng.range(-12.0, 12.0), rng.range(-4.0, 4.0)),
+                    v: vec2(a.cos(), a.sin()) * sp,
+                    rot: rng.range(0.0, TAU),
+                    spin: rng.range(-16.0, 16.0),
+                    size: vec2(rng.range(4.0, 7.0), rng.range(2.0, 3.5)),
+                    color: colors[i % colors.len()],
+                    spark: false,
+                    life: rng.range(0.8, 1.25),
+                });
+            }
+            for i in 0..22 {
+                let a = i as f32 / 22.0 * TAU + rng.range(-0.08, 0.08);
+                let sp = rng.range(300.0, 560.0);
+                parts.push(Particle {
+                    p: origin,
+                    v: vec2(a.cos(), a.sin()) * sp,
+                    rot: 0.0,
+                    spin: 0.0,
+                    size: vec2(1.5, 0.0),
+                    color: theme::lerp_color(colors[i % colors.len()], Color32::WHITE, 0.45),
+                    spark: true,
+                    life: rng.range(0.3, 0.5),
+                });
+            }
+        } else if !spec.micro && !motion::reduced() {
             let colors = if spec.colors.is_empty() {
                 theme::ACCENT_GRADIENT.to_vec()
             } else {
@@ -273,11 +343,13 @@ pub fn show_burst(ctx: &egui::Context, fx: &mut Fx, area: Rect) {
             colors: spec.colors,
             label: spec.label,
             last: now,
+            micro: spec.micro,
+            len: if spec.micro { MICRO_LEN } else { BURST_LEN },
         });
     }
     let Some(b) = &mut fx.burst else { return };
     let age = (now - b.born) as f32;
-    if age > BURST_LEN {
+    if age > b.len || (b.micro && motion::reduced()) {
         fx.burst = None;
         return;
     }
@@ -309,22 +381,30 @@ pub fn show_burst(ctx: &egui::Context, fx: &mut Fx, area: Rect) {
     let accent = b.colors.first().copied().unwrap_or(theme::PINK);
 
     // Flash.
+    let k_size = if b.micro { 0.3 } else { 1.0 };
     let flash = (1.0 - age / 0.45).max(0.0);
     if flash > 0.0 {
         paint::glow_circle(
             &p,
             o,
-            60.0,
+            60.0 * k_size,
             theme::alpha(Color32::WHITE, 0.35 * flash),
-            160.0,
+            160.0 * k_size,
         );
-        paint::glow_circle(&p, o, 140.0, theme::alpha(accent, 0.3 * flash), 220.0);
+        paint::glow_circle(
+            &p,
+            o,
+            140.0 * k_size,
+            theme::alpha(accent, 0.3 * flash),
+            220.0 * k_size,
+        );
     }
     // Shockwave rings.
+    let ring_dur = if b.micro { 0.6 } else { 1.0 };
     for (k, delay) in [0.0f32, 0.12].iter().enumerate() {
-        let t = ((age - delay) / 1.0).clamp(0.0, 1.0);
+        let t = ((age - delay) / ring_dur).clamp(0.0, 1.0);
         if t > 0.0 && t < 1.0 {
-            let r = 30.0 + 460.0 * motion::ease_out_expo(t);
+            let r = 30.0 * k_size + 460.0 * k_size * motion::ease_out_expo(t);
             let c = theme::accent_at(k as f32 * 0.5 + t);
             p.circle_stroke(
                 o,

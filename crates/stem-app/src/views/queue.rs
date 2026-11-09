@@ -77,9 +77,11 @@ pub fn panel(app: &mut StemApp, ui: &mut Ui) {
     let mut action = None;
 
     ui.add_space(4.0);
-    theme::card_frame()
-        .inner_margin(egui::Margin::symmetric(18, 14))
-        .show(ui, |ui| {
+    crate::widgets::paint::glass_card(
+        ui,
+        egui::Margin::symmetric(18, 14),
+        Some(theme::alpha(theme::VIOLET, 0.06)),
+        |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 overline(ui, "Queue");
@@ -259,7 +261,8 @@ pub fn panel(app: &mut StemApp, ui: &mut Ui) {
                 }
                 ui.add_space(4.0);
             }
-        });
+        },
+    );
     ui.add_space(8.0);
 
     let now = ui.input(|i| i.time);

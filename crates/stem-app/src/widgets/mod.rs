@@ -8,6 +8,7 @@ pub mod overview;
 pub mod pads;
 pub mod paint;
 pub mod progress;
+pub mod sheet;
 pub mod toast;
 pub mod waveform_view;
 
@@ -171,4 +172,18 @@ pub fn stat_tile(
         theme::semi(10.5),
         theme::TEXT_FAINT,
     );
+}
+
+/// Round glowing icon badge (sheet and panel headers): tinted disc, rim, sheen, icon.
+pub fn icon_badge(p: &egui::Painter, r: Rect, c: Color32, icon: icons::Icon) {
+    let rad = r.width() / 2.0;
+    paint::glow_circle(p, r.center(), rad - 2.0, theme::alpha(c, 0.3), 14.0);
+    p.circle_filled(r.center(), rad, theme::alpha(c, 0.18));
+    p.circle_stroke(
+        r.center(),
+        rad - 0.5,
+        egui::Stroke::new(1.0, theme::alpha(c, 0.55)),
+    );
+    paint::glass_sheen(p, r, CornerRadius::same(rad as u8), 0.6);
+    icons::paint(p, r.shrink(rad * 0.5), icon, c);
 }

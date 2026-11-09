@@ -191,3 +191,74 @@ pub fn dots(p: &Painter, center: Pos2, r: f32, t: f64, color: Color32) {
         );
     }
 }
+
+/// A render meter that feels alive: a mini equaliser dancing in `color` above a gradient bar
+/// whose glowing head throws off sparks, with a breathing halo. `frac` 0..1; `t` = time.
+/// Moves only while the caller repaints (i.e. while the work runs).
+pub fn live_bar(p: &Painter, rect: Rect, frac: f32, t: f64, color: Color32) {
+    let frac = frac.clamp(0.0, 1.0);
+    let bar_h = 6.0;
+    let bar = Rect::from_min_max(pos2(rect.left(), rect.bottom() - bar_h), rect.max);
+    // Equaliser above the bar: the done part dances, the rest waits as faint stubs.
+    let eq = Rect::from_min_max(rect.min, pos2(rect.right(), bar.top() - 5.0));
+    if eq.height() > 6.0 {
+        let n = ((eq.width() / 6.0) as usize).max(4);
+        let bw = eq.width() / n as f32;
+        let tt = t as f32;
+        for i in 0..n {
+            let x = (i as f32 + 0.5) / n as f32;
+            let done = x <= frac;
+            let wob = ((tt * 7.0 + i as f32 * 1.7).sin() * 0.5 + 0.5)
+                * ((tt * 3.3 - i as f32 * 0.9).sin() * 0.4 + 0.6);
+            // Bars near the head jump highest.
+            let near = (1.0 - ((x - frac).abs() * 6.0)).max(0.0);
+            let h = if done {
+                (0.18 + 0.5 * wob + 0.4 * near).min(1.0)
+            } else {
+                0.12
+            };
+            let bh = eq.height() * h;
+            let r = Rect::from_min_max(
+                pos2(eq.left() + i as f32 * bw + 1.0, eq.bottom() - bh),
+                pos2(eq.left() + (i + 1) as f32 * bw - 1.0, eq.bottom()),
+            );
+            let c = if done {
+                theme::lerp_color(color, theme::accent_at(x + tt * 0.1), 0.35)
+            } else {
+                Color32::from_white_alpha(14)
+            };
+            p.rect_filled(r, CornerRadius::same(1), c);
+        }
+    }
+    // Track and fill.
+    let r = CornerRadius::same(3);
+    p.rect_filled(bar, r, Color32::from_white_alpha(12));
+    let fill = Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar.height()));
+    if fill.width() > 1.0 {
+        let breathe = 0.5 + 0.5 * (t * 4.0).sin() as f32;
+        paint::glow(p, fill, r, theme::alpha(color, 0.35 + 0.2 * breathe), 12.0);
+        let u = (t * 0.4) as f32;
+        paint::gradient_rect(p, fill, r, u, u + 1.0, Color32::WHITE);
+        // Comet head with a halo.
+        let head = pos2(fill.right(), fill.center().y);
+        paint::soft_disc(p, head, 16.0 + 4.0 * breathe, theme::alpha(color, 0.55));
+        p.circle_filled(head, 3.5, Color32::WHITE);
+        // Sparks peeling off the head, drifting back and up (decorative: not under reduced
+        // motion).
+        let sparks = if theme::motion::reduced() { 0 } else { 7 };
+        for k in 0..sparks {
+            let ph = ((t * 1.6 + k as f64 * 0.143) % 1.0) as f32;
+            let sx = head.x - ph * 46.0;
+            let sy = head.y
+                - ph * (6.0 + 9.0 * ((k * 37 % 11) as f32 / 11.0))
+                    * (if k % 2 == 0 { 1.0 } else { -0.6 });
+            if sx > fill.left() {
+                p.circle_filled(
+                    pos2(sx, sy),
+                    1.4 * (1.0 - ph) + 0.4,
+                    theme::alpha(theme::lerp_color(color, Color32::WHITE, 0.5), 1.0 - ph),
+                );
+            }
+        }
+    }
+}

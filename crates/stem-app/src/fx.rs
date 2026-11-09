@@ -342,6 +342,7 @@ pub fn poll(app: &mut StemApp) {
             }
             FxEvent::Wrote(res) => match res {
                 Ok(p) => {
+                    crate::widgets::buttons::export_succeeded();
                     app.toasts.success(
                         "Transform exported",
                         p.file_name()
@@ -377,6 +378,16 @@ pub fn poll(app: &mut StemApp) {
                 }
                 match res {
                     Ok((dir, n)) => {
+                        crate::widgets::buttons::export_succeeded();
+                        app.fx.sparkle_at(
+                            "kit-export",
+                            vec![
+                                crate::theme::PINK,
+                                crate::theme::WARN,
+                                crate::theme::CYAN,
+                                crate::theme::VIOLET,
+                            ],
+                        );
                         app.toasts.success(
                             format!("Kit exported: {n} samples"),
                             dir.display().to_string(),

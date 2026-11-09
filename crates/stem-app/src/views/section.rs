@@ -66,6 +66,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let rr = CornerRadius::same(24);
         paint::glass(&p, card, rr, Some(theme::alpha(theme::VIOLET, 0.07)), 0.0);
         paint::inner_glow(&p, card, rr, theme::alpha(theme::VIOLET, 0.16));
+        paint::edge_light(&p, card, None, card.width() * 0.6, theme::alpha(theme::VIOLET, 0.8));
         let inner = card.shrink2(vec2(PAD, 0.0));
 
         // ---- header
@@ -193,31 +194,46 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let tiles_top = tr.bottom() + 22.0;
         let gap = 12.0;
         let tw = (inner.width() - 3.0 * gap) / 4.0;
+        // The readout tiles rise in one after another when the picker opens.
+        let tile_in = |i: usize| {
+            motion::ease_out(motion::appear(
+                &ctx,
+                Id::unique(("section-tile", i)),
+                0.12 + i as f32 * motion::STAGGER,
+                motion::ENTER,
+            ))
+        };
         let tile_r = |i: usize| {
             Rect::from_min_size(
-                pos2(inner.left() + i as f32 * (tw + gap), tiles_top),
+                pos2(inner.left() + i as f32 * (tw + gap), tiles_top + 12.0 * (1.0 - tile_in(i))),
                 vec2(tw, 78.0),
             )
+        };
+        let tp = |i: usize| {
+            let mut q = p.clone();
+            q.multiply_opacity(tile_in(i));
+            q
         };
         let has_grid = pick.grid().is_some();
         let bar_at = |s: f64| pick.bar_number(s).map(|n| format!("bar {n}"));
         let len = pick.sel.1 - pick.sel.0;
         let whole = pick.range().is_none();
-        tile(&p, tile_r(0), "In", &mmss_t(pick.sel.0), bar_at(pick.sel.0).as_deref(), theme::PINK);
-        tile(&p, tile_r(1), "Out", &mmss_t(pick.sel.1), bar_at(pick.sel.1).as_deref(), theme::CYAN);
+        tile(&tp(0), tile_r(0), "In", &mmss_t(pick.sel.0), bar_at(pick.sel.0).as_deref(), theme::PINK);
+        tile(&tp(1), tile_r(1), "Out", &mmss_t(pick.sel.1), bar_at(pick.sel.1).as_deref(), theme::CYAN);
         let len_sub = if whole {
             "whole track".to_owned()
         } else {
             let pct = 100.0 * len / dur;
+            let of = if tw < 200.0 { "" } else { " of the track" };
             match pick.bars() {
                 Some(bars) if (bars - bars.round()).abs() < 0.05 => {
-                    format!("{} bars · {pct:.0}% of the track", bars.round())
+                    format!("{} bars · {pct:.0}%{of}", bars.round())
                 }
-                Some(bars) => format!("{bars:.1} bars · {pct:.0}% of the track"),
-                None => format!("{pct:.0}% of the track"),
+                Some(bars) => format!("{bars:.1} bars · {pct:.0}%{of}"),
+                None => format!("{pct:.0}%{of}"),
             }
         };
-        tile(&p, tile_r(2), "Length", &mmss_t(len), Some(&len_sub), theme::VIOLET);
+        tile(&tp(2), tile_r(2), "Length", &mmss_t(len), Some(&len_sub), theme::VIOLET);
         if let Some((arch, _)) = &model {
             let est = estimate_secs(arch, gpu, len);
             let full = estimate_secs(arch, gpu, dur);
@@ -227,7 +243,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             } else {
                 format!("whole track ~{} · {on}", mmss(full))
             };
-            tile(&p, tile_r(3), "Est. split time", &format!("~{}", mmss(est.max(1.0))), Some(&sub), theme::GOOD);
+            tile(&tp(3), tile_r(3), "Est. split time", &format!("~{}", mmss(est.max(1.0))), Some(&sub), theme::GOOD);
         }
 
         // ---- controls
@@ -241,6 +257,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         left.spacing_mut().item_spacing.x = 10.0;
+        // Narrow windows: bar chips lose their unit (a "BARS" label carries it) and
+        // "Whole track" shrinks to its icon, so the two button groups never meet.
+        let narrow = inner.width() < 900.0;
+        if narrow {
+            left.spacing_mut().item_spacing.x = 6.0;
+        }
         toggle_play = buttons::icon_button(
             &mut left,
             if playing { Icon::Pause } else { Icon::Play },
@@ -264,11 +286,23 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             ];
             buttons::segmented(&mut left, "section-snap", &mut pick.snap, &opts);
             left.add_space(8.0);
+            if narrow {
+                left.label(
+                    egui::RichText::new("BARS")
+                        .font(theme::semi(10.5))
+                        .color(theme::TEXT_FAINT),
+                );
+            }
             for bars in [4usize, 8, 16, 32] {
                 let on = pick
                     .bars()
                     .is_some_and(|b| (b - bars as f64).abs() < 0.05 && !whole);
-                if buttons::chip(&mut left, &format!("{bars} bars"), theme::VIOLET, on)
+                let text = if narrow {
+                    bars.to_string()
+                } else {
+                    format!("{bars} bars")
+                };
+                if buttons::chip(&mut left, &text, theme::VIOLET, on)
                     .on_hover_text(format!("{bars} bars from the in point"))
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .clicked()
@@ -298,11 +332,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         split = Button::primary(label)
             .icon(Icon::Sparkle)
             .height(42.0)
-            .min_width(170.0)
+            .min_width(if narrow { 150.0 } else { 170.0 })
             .tooltip("Separate only this part (Enter)")
             .show(&mut right)
             .clicked();
-        if Button::new("Whole track")
+        if Button::new(if narrow { "" } else { "Whole track" })
             .icon(Icon::Refresh)
             .height(42.0)
             .enabled(!whole)
