@@ -9,10 +9,13 @@
 mod analysis;
 mod app;
 mod backend;
+mod chop;
+mod chop_export;
 mod demo;
 mod dragout;
 mod export;
 mod midi;
+mod pads;
 mod paths;
 mod pipeline;
 mod player;

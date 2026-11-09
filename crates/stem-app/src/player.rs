@@ -205,17 +205,11 @@ impl Player {
         self.shared = Some(shared);
     }
 
-    /// Play an extra source on the same output, next to the stems (MIDI audition). Opens the
-    /// device if needed; false when there is no audio output.
-    pub fn play_source(&mut self, source: impl Source + Send + 'static) -> bool {
-        if !self.ensure_sink() {
-            return false;
-        }
-        self.set_playing(false);
-        if let Some(sink) = &self.sink {
-            sink.mixer().add(source);
-        }
-        true
+    /// The output mixer (opening the device if needed), for extra sources such as the chop
+    /// pads' one-shot voices. `None` without an audio device.
+    pub fn mixer(&mut self) -> Option<rodio::mixer::Mixer> {
+        self.ensure_sink();
+        self.sink.as_ref().map(|s| s.mixer().clone())
     }
 
     pub fn unload(&mut self) {

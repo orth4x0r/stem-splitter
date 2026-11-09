@@ -397,12 +397,13 @@ impl MidiSheet {
         }
         let start = ((from.max(0.0) * sr as f64) as u64).min(buf.frames() as u64);
         let (preview, source) = Preview::new(Arc::new(buf), start);
-        if player.play_source(source) {
-            self.preview = Some(preview);
-            true
-        } else {
-            false
-        }
+        let Some(mixer) = player.mixer() else {
+            return false;
+        };
+        player.set_playing(false);
+        mixer.add(source);
+        self.preview = Some(preview);
+        true
     }
 }
 

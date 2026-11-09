@@ -79,6 +79,8 @@ pub struct Session {
     pub analysis: Option<crate::analysis::TrackAnalysis>,
     /// Visible window of the waveforms (zoom / scroll).
     pub timeline: crate::timeline::Timeline,
+    /// Chop mode (slices, pads), saved per session.
+    pub chop: crate::chop::ChopState,
 }
 
 impl Session {
@@ -447,6 +449,7 @@ impl StemApp {
             a.apply_saved_bpm(saved);
         }
         let timeline = crate::timeline::Timeline::new(duration, audio.clone());
+        let chop = crate::chop::ChopState::load(&out.out_dir);
         self.session = Some(Session {
             title: out.title,
             out_dir: out.out_dir,
@@ -457,6 +460,7 @@ impl StemApp {
             sel_track: 0,
             analysis,
             timeline,
+            chop,
         });
     }
 
@@ -946,6 +950,7 @@ impl eframe::App for StemApp {
         }
 
         views::draw(self, ui);
+        let chop_animating = views::chop_tick(self, now);
         self.toasts.show(&ctx);
 
         // Native drag-out runs the OS drag loop right here, while the button is still down.
@@ -969,6 +974,7 @@ impl eframe::App for StemApp {
             || self.export_busy
             || self.queue.has_work()
             || self.toasts.is_animating()
+            || chop_animating
             || self
                 .session
                 .as_ref()

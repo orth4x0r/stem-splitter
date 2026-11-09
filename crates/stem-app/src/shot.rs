@@ -3,9 +3,9 @@
 //! `STEM_DEMO=1 STEM_SHOT=out.png STEM_SCENE=results stem-splitter` sets up a scene with
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
 //! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
-//! queue, export, midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set
-//! `STEM_MIDI_MODEL=nmp.onnx` and `ORT_DYLIB_PATH` to run the real model instead of the
-//! demo stand-in).
+//! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat),
+//! midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set `STEM_MIDI_MODEL=nmp.onnx`
+//! and `ORT_DYLIB_PATH` to run the real model instead of the demo stand-in).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -170,7 +170,8 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "results-zoom" | "export" | "midi" | "midi-quantize" => {
+            "results" | "results-zoom" | "export" | "chop" | "chop-grid" | "midi"
+            | "midi-quantize" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -220,6 +221,30 @@ impl Shot {
                     });
                 }
                 app.player.seek(12.1);
+                if let Some(s) = &mut app.session
+                    && self.scene.starts_with("chop")
+                {
+                    use crate::chop::{ChopMode, ChopSettings, GridChoice};
+                    s.chop.open = true;
+                    s.chop.settings = if self.scene == "chop" {
+                        ChopSettings {
+                            stem: Some(StemKind::Drums),
+                            // Two bars from the selection.
+                            region: s.selection.map(|(a, b)| (a, a + 2.0 * (b - a))),
+                            ..Default::default()
+                        }
+                    } else {
+                        ChopSettings {
+                            stem: Some(StemKind::Other),
+                            mode: ChopMode::Grid,
+                            grid: GridChoice::HalfBeat,
+                            region: s.selection.map(|(a, _)| (a, a + 8.0 * 0.6667)),
+                            choke: true,
+                            ..Default::default()
+                        }
+                    };
+                    s.chop.retarget();
+                }
                 if self.scene.starts_with("midi") {
                     if let Some(s) = &mut app.session {
                         s.selection = None;
@@ -229,12 +254,15 @@ impl Shot {
                             Some(stem_models::transcribe::QuantizeGrid::Sixteenth);
                     }
                     crate::views::midi::open_sheet(app, 2, false, _ctx);
-                } else if self.scene == "export" {
+                }
+                if self.scene == "export" {
                     app.settings.export_without = true;
                     app.settings.export_format = crate::settings::ExportFormat::Flac24;
                     app.export_all_stems();
                 } else {
-                    app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                    if !self.scene.starts_with("chop") && !self.scene.starts_with("midi") {
+                        app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
+                    }
                 }
             }
             "models" => {
@@ -270,9 +298,38 @@ impl Shot {
         }
     }
 
-    pub fn frame(&mut self, _app: &mut StemApp, ctx: &egui::Context) {
+    pub fn frame(&mut self, app: &mut StemApp, ctx: &egui::Context) {
         ctx.request_repaint();
         let t = ctx.input(|i| i.time);
+        // Chop scenes: finger-drum a few pads just before the capture so they flash.
+        if self.scene.starts_with("chop")
+            && let Some(s) = &mut app.session
+        {
+            // Relative to now, so the flash looks the same whenever the capture lands.
+            let at = t;
+            let hits: &[(usize, f64, f32)] = if self.scene == "chop" {
+                &[
+                    (0, 0.5, 1.0),
+                    (5, 0.12, 0.8),
+                    (2, 0.04, 1.0),
+                    (10, 0.3, 0.9),
+                ]
+            } else {
+                &[(3, 0.03, 1.0), (8, 0.25, 0.7)]
+            };
+            for &(i, ago, v) in hits {
+                if let Some(h) = s.chop.hits.get_mut(i) {
+                    h.at = at - ago;
+                    h.velocity = v;
+                }
+            }
+            s.chop.held = if self.scene == "chop" {
+                vec![2]
+            } else {
+                vec![3]
+            };
+            s.chop.hover = Some(if self.scene == "chop" { 7 } else { 5 });
+        }
         if !self.requested && t > self.delay {
             self.requested = true;
             let path = self.path.clone();
