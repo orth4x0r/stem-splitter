@@ -410,6 +410,51 @@ const ENTRIES: &[Entry] = &[
         non_commercial: false,
     },
     Entry {
+        id: "mel-roformer-kim-fast",
+        name: "Mel-RoFormer Vocals (Kim, fast)",
+        description: "The same Kim Mel-RoFormer computing in half precision: about 1.5x faster \
+                      on the GPU (114 s -> 78 s per minute of audio on an RX 6700S) with output \
+                      54 dB from the original, i.e. inaudibly different. Not hosted - make it \
+                      from the Mel-RoFormer download with tools/convert_roformer_fp16.py.",
+        stems: &[StemKind::Vocals, StemKind::Instrumental],
+        sample_rate: 44_100,
+        arch: roformer(0.5),
+        // tools/convert_roformer_fp16.py of mel-roformer.fp16.onnx (onnx 1.23.2,
+        // onnxconverter-common 1.16.0). Same I/O as mel-roformer-kim.
+        url: our_url!("mel_roformer_kim_fast.onnx"),
+        sha256: Some("62b476feaf623421d30ef070ef8fd5c3a789aef9fa9269668b3f3d0be43b287c"),
+        size_bytes: 463_452_732,
+        license: "MIT (weights: Kimberley Jensen; model code: ZFTurbo/Music-Source-Separation-\
+                  Training and lucidrains/BS-RoFormer; ONNX export: audiojs; fp16 conversion: \
+                  this repo)",
+        non_commercial: false,
+    },
+    Entry {
+        id: "bs-roformer-4stem-fast",
+        name: "BS-RoFormer (4 stems, fast)",
+        description: "The same 4-stem BS-RoFormer computing in half precision: about 2x faster \
+                      on the GPU (300 s -> 140 s per minute of audio on an RX 6700S). Output is \
+                      40-45 dB from the original (bass the least exact), so compare on a \
+                      bass-heavy track. Not hosted - make it from the BS-RoFormer download with \
+                      tools/convert_roformer_fp16.py.",
+        stems: &[
+            StemKind::Drums,
+            StemKind::Bass,
+            StemKind::Other,
+            StemKind::Vocals,
+        ],
+        sample_rate: 44_100,
+        arch: roformer(0.5),
+        // tools/convert_roformer_fp16.py of bs_roformer_4stem_rhythm_fp16.onnx. Same I/O as
+        // bs-roformer-4stem.
+        url: our_url!("bs_roformer_4stem_fast.onnx"),
+        sha256: Some("b25765ca9958d2798d670af38db147759a081333c708794d65979530e6c3dfd5"),
+        size_bytes: 267_189_252,
+        license: "MIT (weights: ZFTurbo MSST v1.0.12 model_bs_roformer_ep_17_sdr_9.6568, \
+                  trained on MUSDB18-HQ; ONNX export: silverdaw; fp16 conversion: this repo)",
+        non_commercial: false,
+    },
+    Entry {
         id: "scnet",
         name: "SCNet (4 stems, fast)",
         description: "Fast 4-stem: a 13 MB int8 SCNet (drums, bass, other, vocals) at about \
@@ -554,6 +599,13 @@ mod tests {
         };
         assert_eq!(frames("mel-roformer-kim"), 801);
         assert_eq!(frames("bs-roformer-4stem"), 801);
+        assert_eq!(frames("mel-roformer-kim-fast"), 801);
+        assert_eq!(frames("bs-roformer-4stem-fast"), 801);
+        assert!(
+            find_model("bs-roformer-4stem-fast")
+                .unwrap()
+                .needs_manual_export()
+        );
         assert_eq!(frames("scnet"), 476);
         assert_eq!(frames("scnet-large"), 476);
         assert_eq!(frames("drumsep-mdx23c"), 256);
