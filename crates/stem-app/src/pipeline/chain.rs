@@ -571,8 +571,9 @@ impl OrtRunner {
         };
         emit("loading", Some(0.0));
         let options = self.quality.load_options(&model.arch);
-        let mut sep =
-            stem_models::load_with(model, path, device, &options).map_err(|e| e.to_string())?;
+        let _awake = crate::awake::KeepAwake::new();
+        let mut lease = crate::model_cache::take(model, path, device, &options)?;
+        let sep = &mut lease.sep;
         let on = Cell::new(match sep.active_device() {
             // Short: the progress line also names the step and model.
             Device::Cpu if remembered.is_some() => "CPU (GPU failed recently)",
@@ -595,7 +596,13 @@ impl OrtRunner {
             },
             cancel,
         );
-        if let (Some(reason), Some(adapter)) = (failure.into_inner(), adapter) {
+        let failure = failure.into_inner();
+        // Kept loaded for the next split (queue, chain, "split again"), unless it just fell
+        // back to the CPU.
+        if result.is_ok() && failure.is_none() {
+            crate::model_cache::park(lease);
+        }
+        if let (Some(reason), Some(adapter)) = (failure, adapter) {
             gpu_health::update(&self.health, now, |f| {
                 f.record(GpuFailure {
                     model_id: model.id.to_owned(),

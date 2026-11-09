@@ -213,7 +213,74 @@ pub fn write_wav_meta(
     if meta.is_empty() {
         return Ok(());
     }
-    apply_to_file(path, meta)
+    append_to_fresh_file(path, meta)
+}
+
+/// Append the metadata chunks to a WAV that was just written without any, patching the RIFF
+/// size in place. Unlike [`apply_to_file`] this never reads or rewrites the audio, which for a
+/// full-length stem is tens of megabytes.
+fn append_to_fresh_file(path: &Path, meta: &WavMeta) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head)?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
+        return Err(bad("no RIFF/WAVE header"));
+    }
+    // Walk the chunk headers (seeking over the bodies) for the format and frame count.
+    let len = f.metadata()?.len();
+    let (mut pos, mut sr, mut block, mut data_len) = (12u64, None, 1u64, None);
+    while pos + 8 <= len {
+        f.seek(SeekFrom::Start(pos))?;
+        let mut h = [0u8; 8];
+        f.read_exact(&mut h)?;
+        let size = u32::from_le_bytes(h[4..8].try_into().unwrap_or_default()) as u64;
+        match &h[0..4] {
+            b"fmt " if size >= 16 => {
+                let mut fmt = [0u8; 16];
+                f.read_exact(&mut fmt)?;
+                sr = Some(u32::from_le_bytes(fmt[4..8].try_into().unwrap_or_default()));
+                block =
+                    u16::from_le_bytes(fmt[12..14].try_into().unwrap_or_default()).max(1) as u64;
+            }
+            b"data" => data_len = Some(size),
+            b"acid" | b"smpl" => return apply_to_file(path, meta),
+            _ => {}
+        }
+        pos += 8 + size + (size & 1);
+    }
+    let sr = sr.ok_or_else(|| bad("no fmt chunk"))?;
+    let frames = data_len.ok_or_else(|| bad("no data chunk"))? / block;
+    let mut tail = Vec::with_capacity(128);
+    if len & 1 == 1 {
+        tail.push(0); // pad byte of the previous chunk
+    }
+    let mut chunks = vec![Chunk {
+        id: *b"acid",
+        data: acid_chunk(meta, frames, sr),
+    }];
+    if let Some(data) = smpl_chunk(meta, sr) {
+        chunks.push(Chunk { id: *b"smpl", data });
+    }
+    for c in &chunks {
+        tail.extend_from_slice(&c.id);
+        tail.extend_from_slice(&(c.data.len() as u32).to_le_bytes());
+        tail.extend_from_slice(&c.data);
+        if c.data.len() & 1 == 1 {
+            tail.push(0);
+        }
+    }
+    let riff = u32::try_from(len + tail.len() as u64 - 8)
+        .map_err(|_| AudioError::Encode("WAV over 4 GB".into()))?;
+    f.seek(SeekFrom::End(0))?;
+    f.write_all(&tail)?;
+    f.seek(SeekFrom::Start(4))?;
+    f.write_all(&riff.to_le_bytes())?;
+    Ok(())
 }
 
 /// [`crate::write_audio`] that adds `meta` when the format is WAV (FLAC / MP3 are written
@@ -346,6 +413,32 @@ mod tests {
         assert!(!chunks.iter().any(|c| &c.id == b"smpl"));
         assert!(read_meta(&bytes).unwrap().unwrap().one_shot);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The in-place append gives exactly the bytes the read-rewrite route gives.
+    #[test]
+    fn fresh_append_matches_rewrite() {
+        for (format, frames, channels) in [
+            (WavFormat::Pcm24, 4411, 1), // odd data length: needs a pad byte
+            (WavFormat::Pcm16, 1000, 2),
+            (WavFormat::Float32, 777, 2),
+        ] {
+            let buf = tone(frames, channels);
+            let meta = WavMeta {
+                tempo: Some(120.0),
+                root: Some(2),
+                loop_frames: Some((10, frames as u32)),
+                ..Default::default()
+            };
+            let (a, b) = (tmp("append-a.wav"), tmp("append-b.wav"));
+            write_wav_meta(&a, &buf, format, &meta).unwrap();
+            write_wav(&b, &buf, format).unwrap();
+            apply_to_file(&b, &meta).unwrap();
+            let (a_bytes, b_bytes) = (std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+            assert_strict_riff(&a_bytes);
+            assert!(a_bytes == b_bytes, "{format:?} {frames}x{channels}");
+            let _ = (std::fs::remove_file(a), std::fs::remove_file(b));
+        }
     }
 
     #[test]

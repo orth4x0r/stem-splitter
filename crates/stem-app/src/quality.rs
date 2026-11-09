@@ -12,7 +12,7 @@
 //! | HTDemucs   | 0.25 (demucs `--overlap`)  | 0.5                      | 0.75                      |
 //! | RoFormer   | catalog (0.5 = `num_overlap` 2) | 0.75 (`num_overlap` 4, the BS-RoFormer config) | 0.875 (`num_overlap` 8) |
 //! | MDX23C     | catalog (0.5)              | 0.75 (`num_overlap` 4)   | 0.875 (`num_overlap` 8)   |
-//! | SCNet      | 0.75 (reference step 0.25) | 0.75 (already there)     | 0.875                     |
+//! | SCNet      | catalog (0.5)              | 0.75 (reference step 0.25) | 0.875                   |
 //!
 //! A level never lowers a model's default overlap.
 
@@ -73,7 +73,7 @@ impl SplitQuality {
     }
 
     /// What to put in `LoadOptions::overlap`: `None` when the model's default already is the
-    /// level's overlap (so Fast, and Balanced on SCNet, keep the cache keys they always had).
+    /// level's overlap (so Fast keeps the cache keys it always had).
     pub fn overlap(self, arch: &ModelArch) -> Option<f32> {
         let default = Self::default_overlap(arch);
         self.target(arch)
@@ -195,8 +195,8 @@ mod tests {
         assert_eq!(SplitQuality::Balanced.overlap(mel), Some(0.75));
         assert_eq!(SplitQuality::Best.overlap(mel), Some(0.875));
         assert_eq!(SplitQuality::Best.cost(mel), 4.0);
-        // SCNet already runs at 0.75.
-        assert_eq!(SplitQuality::Balanced.overlap(scnet), None);
+        // SCNet's default is 0.5; Balanced is the reference's 0.75.
+        assert_eq!(SplitQuality::Balanced.overlap(scnet), Some(0.75));
         assert_eq!(
             SplitQuality::Best.cache_tag(scnet).unwrap(),
             "overlap 0.875"

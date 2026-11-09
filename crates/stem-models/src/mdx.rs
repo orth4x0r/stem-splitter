@@ -24,13 +24,13 @@
 //! subtracting), and the input is limited to a 0.9 peak like audio-separator does
 //! (outputs are scaled back).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use rayon::prelude::*;
 use stem_audio::AudioBuffer;
 use stem_audio::stft::{Complex32, Spectrogram, Stft};
 
-use crate::network::{Network, TensorIn};
+use crate::network::{Network, OwnedInput, TensorOut, run_pipelined};
 use crate::{
     Device, LoadOptions, ModelArch, ModelError, ModelInfo, Progress, Result, Separator, StemKind,
     dsp,
@@ -116,13 +116,14 @@ pub(crate) fn demix(
     let mut acc = [vec![0.0f32; total], vec![0.0f32; total]];
     let mut divider = vec![0.0f32; total];
     let full_window = window(chunk, p.overlap);
-    let mut input = vec![0.0f32; p.batch * 4 * plane];
     let batches: Vec<&[usize]> = starts.chunks(p.batch).collect();
+    let in_len = p.batch * 4 * plane;
+    let overlap = net.device() != Device::Cpu;
 
-    for (bi, batch) in batches.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ModelError::Cancelled);
-        }
+    let prepare = |bi: usize, inputs: &mut Vec<OwnedInput>| -> Result<()> {
+        let batch = batches[bi];
+        inputs.resize_with(1, OwnedInput::default);
+        let input = inputs[0].reshape(vec![p.batch, 4, dim_f, dim_t]);
         // STFT every (item, channel) into its two planes of the input tensor.
         input
             .par_chunks_mut(2 * plane)
@@ -142,16 +143,16 @@ pub(crate) fn demix(
                     }
                 }
             });
+        Ok(())
+    };
 
-        let out = net.run(&[TensorIn {
-            shape: vec![p.batch, 4, dim_f, dim_t],
-            data: &input,
-        }])?;
-        let out = out
+    let finish = |bi: usize, outputs: Vec<TensorOut>| -> Result<()> {
+        let batch = batches[bi];
+        let out = outputs
             .into_iter()
             .next()
             .ok_or_else(|| ModelError::Runtime("model returned no outputs".into()))?;
-        if out.data.len() != input.len() {
+        if out.data.len() != in_len {
             return Err(ModelError::Runtime(format!(
                 "MDX output shape {:?}, expected [{}, 4, {dim_f}, {dim_t}]",
                 out.shape, p.batch
@@ -198,7 +199,9 @@ pub(crate) fn demix(
             }
         }
         progress((bi + 1) as f32 / batches.len() as f32);
-    }
+        Ok(())
+    };
+    run_pipelined(net, batches.len(), overlap, cancel, prepare, finish)?;
 
     let comp = p.compensate;
     let finish = |a: &[f32]| -> Vec<f32> {
@@ -391,7 +394,7 @@ pub(crate) fn separate_two_stems(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::{FnNetwork, TensorOut};
+    use crate::network::{FnNetwork, OnGpu, TensorIn};
 
     fn small() -> MdxParams {
         MdxParams {
@@ -492,6 +495,19 @@ mod tests {
         assert!(fractions.windows(2).all(|w| w[0] < w[1]));
         let plan = p.plan(mix[0].len());
         assert_eq!(fractions.len(), plan.starts.len().div_ceil(p.batch));
+
+        // On a "GPU" the network runs on its own thread, overlapped: same result.
+        let mut gpu = OnGpu(net);
+        let overlapped = demix(
+            &mut gpu,
+            &stft,
+            &p,
+            &mix,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(overlapped == out);
     }
 
     #[test]

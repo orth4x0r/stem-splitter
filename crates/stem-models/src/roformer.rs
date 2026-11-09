@@ -39,14 +39,14 @@
 //! and DirectML wants static shapes anyway); only the per-stem accumulators are track-sized.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use rayon::prelude::*;
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use stem_audio::AudioBuffer;
 
-use crate::network::{Network, TensorIn, TensorOut};
+use crate::network::{Network, OwnedInput, TensorOut, run_pipelined};
 use crate::{
     Device, LoadOptions, ModelArch, ModelError, ModelInfo, Progress, Result, Separator, StemKind,
     demucs, dsp,
@@ -525,9 +525,97 @@ impl SpecSeparator {
         })
     }
 
-    /// One segment (`[channel][L]`) through the graph; returns `[source][channel][L]`.
-    fn run_segment(&mut self, seg: &[Vec<f32>; 2]) -> Result<Vec<[Vec<f32>; 2]>> {
-        let p = &self.params;
+    /// `demix` over a stereo signal at the model's rate; returns `[source][channel][n]` for the
+    /// sources the graph predicts.
+    fn demix(
+        &mut self,
+        x: &[Vec<f32>; 2],
+        progress: &mut dyn FnMut(f32),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<[Vec<f32>; 2]>> {
+        let n = x[0].len();
+        let plan = self.params.plan(n);
+        let (seg_len, border) = (self.params.segment, plan.border);
+        let padded: Option<[Vec<f32>; 2]> = (border > 0).then(|| {
+            [
+                dsp::reflect_pad(&x[0], border, border),
+                dsp::reflect_pad(&x[1], border, border),
+            ]
+        });
+        let src = padded.as_ref().unwrap_or(x);
+        let count = plan.starts.len();
+        let mut acc: Vec<[Vec<f32>; 2]> = Vec::new();
+        let mut wsum = vec![0.0f32; plan.len];
+        let mut seg = [vec![0.0f32; seg_len], vec![0.0f32; seg_len]];
+        let overlap = self.net.device() != Device::Cpu;
+        let io = SegmentIo {
+            info: &self.info,
+            params: &self.params,
+            layout: self.layout,
+            stft: &self.stft,
+        };
+        let params = &self.params;
+        let prepare = |k: usize, inputs: &mut Vec<OwnedInput>| -> Result<()> {
+            let start = plan.starts[k];
+            cut_segment(&src[0], start, &mut seg[0]);
+            cut_segment(&src[1], start, &mut seg[1]);
+            io.inputs(&seg, inputs);
+            Ok(())
+        };
+        let finish = |k: usize, outputs: Vec<TensorOut>| -> Result<()> {
+            let start = plan.starts[k];
+            let len = seg_len.min(src[0].len().saturating_sub(start));
+            let stems = io.stems(outputs)?;
+            if acc.is_empty() {
+                acc = (0..stems.len())
+                    .map(|_| [vec![0.0; plan.len], vec![0.0; plan.len]])
+                    .collect();
+            }
+            let w: Vec<f32> = (0..len).map(|i| params.weight(k, count, i)).collect();
+            for (a, s) in acc.iter_mut().zip(&stems) {
+                for c in 0..2 {
+                    let dst = &mut a[c][start..start + len];
+                    for ((d, &v), &wi) in dst.iter_mut().zip(&s[c]).zip(&w) {
+                        *d += v * wi;
+                    }
+                }
+            }
+            for (d, &wi) in wsum[start..start + len].iter_mut().zip(&w) {
+                *d += wi;
+            }
+            progress((k + 1) as f32 / count as f32);
+            Ok(())
+        };
+        run_pipelined(self.net.as_mut(), count, overlap, cancel, prepare, finish)?;
+        drop(padded);
+        Ok(acc
+            .into_iter()
+            .map(|a| {
+                a.map(|ch| {
+                    ch[border..border + n]
+                        .iter()
+                        .zip(&wsum[border..border + n])
+                        .map(|(&v, &w)| if w > 0.0 { v / w } else { 0.0 })
+                        .collect()
+                })
+            })
+            .collect())
+    }
+}
+
+/// The parts of a [`SpecSeparator`] the per-segment work needs, borrowed apart from the
+/// network (which may be busy on the inference thread meanwhile).
+struct SegmentIo<'a> {
+    info: &'a ModelInfo,
+    params: &'a SpecParams,
+    layout: IoLayout,
+    stft: &'a SpecStft,
+}
+
+impl SegmentIo<'_> {
+    /// One segment's (`[channel][L]`) graph inputs.
+    fn inputs(&self, seg: &[Vec<f32>; 2], inputs: &mut Vec<OwnedInput>) {
+        let p = self.params;
         let (bins, frames) = (p.bins(), p.frames);
         let full = bins * frames;
         // The graph's planes: the lowest `dim_f` rows of each (frequency-major) STFT plane.
@@ -552,39 +640,40 @@ impl SpecSeparator {
                 v.truncate(2 * plane);
             }
         }
-
-        let outputs = match self.layout {
+        match self.layout {
             IoLayout::Stacked => {
-                let mut stacked = Vec::with_capacity(4 * plane);
+                inputs.resize_with(1, OwnedInput::default);
+                let stacked = &mut inputs[0];
+                stacked.shape = vec![1, 4, gbins, frames];
+                stacked.data.clear();
                 for c in 0..2 {
-                    stacked.extend_from_slice(&re[c * plane..(c + 1) * plane]);
-                    stacked.extend_from_slice(&im[c * plane..(c + 1) * plane]);
+                    stacked
+                        .data
+                        .extend_from_slice(&re[c * plane..(c + 1) * plane]);
+                    stacked
+                        .data
+                        .extend_from_slice(&im[c * plane..(c + 1) * plane]);
                 }
-                drop((re, im));
-                self.net.run(&[TensorIn {
-                    shape: vec![1, 4, gbins, frames],
-                    data: &stacked,
-                }])?
             }
             IoLayout::Split { real_in, .. } => {
-                let real = TensorIn {
-                    shape: vec![1, 2, gbins, frames],
-                    data: &re,
+                inputs.resize_with(2, OwnedInput::default);
+                let shape = vec![1, 2, gbins, frames];
+                inputs[real_in] = OwnedInput {
+                    shape: shape.clone(),
+                    data: re,
                 };
-                let imag = TensorIn {
-                    shape: vec![1, 2, gbins, frames],
-                    data: &im,
-                };
-                let inputs = if real_in == 0 {
-                    [real, imag]
-                } else {
-                    [imag, real]
-                };
-                self.net.run(&inputs)?
+                inputs[1 - real_in] = OwnedInput { shape, data: im };
             }
-        };
+        }
+    }
+
+    /// One segment's graph outputs back to audio, `[source][channel][L]`.
+    fn stems(&self, outputs: Vec<TensorOut>) -> Result<Vec<[Vec<f32>; 2]>> {
+        let p = self.params;
+        let plane = p.graph_bins() * p.frames;
+        let frames = p.frames;
         let (out_re, out_im, sources) = self.split_outputs(outputs)?;
-        let stft = &self.stft;
+        let stft = self.stft;
         let (scale, segment) = (1.0 / p.scale, p.segment);
         let planes: Vec<Vec<f32>> = (0..sources * 2)
             .into_par_iter()
@@ -669,69 +758,6 @@ impl SpecSeparator {
             }
         }
     }
-
-    /// `demix` over a stereo signal at the model's rate; returns `[source][channel][n]` for the
-    /// sources the graph predicts.
-    fn demix(
-        &mut self,
-        x: &[Vec<f32>; 2],
-        progress: &mut dyn FnMut(f32),
-        cancel: &AtomicBool,
-    ) -> Result<Vec<[Vec<f32>; 2]>> {
-        let n = x[0].len();
-        let plan = self.params.plan(n);
-        let (seg_len, border) = (self.params.segment, plan.border);
-        let padded: Option<[Vec<f32>; 2]> = (border > 0).then(|| {
-            [
-                dsp::reflect_pad(&x[0], border, border),
-                dsp::reflect_pad(&x[1], border, border),
-            ]
-        });
-        let src = padded.as_ref().unwrap_or(x);
-        let count = plan.starts.len();
-        let mut acc: Vec<[Vec<f32>; 2]> = Vec::new();
-        let mut wsum = vec![0.0f32; plan.len];
-        let mut seg = [vec![0.0f32; seg_len], vec![0.0f32; seg_len]];
-        for (k, &start) in plan.starts.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ModelError::Cancelled);
-            }
-            let len = cut_segment(&src[0], start, &mut seg[0]);
-            cut_segment(&src[1], start, &mut seg[1]);
-            let stems = self.run_segment(&seg)?;
-            if acc.is_empty() {
-                acc = (0..stems.len())
-                    .map(|_| [vec![0.0; plan.len], vec![0.0; plan.len]])
-                    .collect();
-            }
-            let w: Vec<f32> = (0..len).map(|i| self.params.weight(k, count, i)).collect();
-            for (a, s) in acc.iter_mut().zip(&stems) {
-                for c in 0..2 {
-                    let dst = &mut a[c][start..start + len];
-                    for ((d, &v), &wi) in dst.iter_mut().zip(&s[c]).zip(&w) {
-                        *d += v * wi;
-                    }
-                }
-            }
-            for (d, &wi) in wsum[start..start + len].iter_mut().zip(&w) {
-                *d += wi;
-            }
-            progress((k + 1) as f32 / count as f32);
-        }
-        drop(padded);
-        Ok(acc
-            .into_iter()
-            .map(|a| {
-                a.map(|ch| {
-                    ch[border..border + n]
-                        .iter()
-                        .zip(&wsum[border..border + n])
-                        .map(|(&v, &w)| if w > 0.0 { v / w } else { 0.0 })
-                        .collect()
-                })
-            })
-            .collect())
-    }
 }
 
 /// Every `stride`-th `[F, T]` plane of an output tensor, starting at `offset`.
@@ -814,6 +840,7 @@ impl Separator for SpecSeparator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::TensorIn;
     use stem_audio::stft::Stft;
 
     fn roformer_arch() -> ModelArch {
@@ -1073,6 +1100,8 @@ mod tests {
         out_names: Vec<String>,
         gains: Vec<f32>,
         calls: usize,
+        /// Report a GPU, which runs the graph overlapped on its own thread.
+        gpu: bool,
     }
 
     impl Network for GainNet {
@@ -1124,7 +1153,11 @@ mod tests {
             })
         }
         fn device(&self) -> Device {
-            Device::Cpu
+            if self.gpu {
+                Device::DirectMl(0)
+            } else {
+                Device::Cpu
+            }
         }
     }
 
@@ -1172,6 +1205,7 @@ mod tests {
             out_names: vec!["stems_spec".into()],
             gains: vec![0.3],
             calls: 0,
+            gpu: false,
         };
         let info = small_info(arch, vec![StemKind::Vocals, StemKind::Instrumental]);
         let mut sep = SpecSeparator::new(info, Box::new(net), &LoadOptions::default()).unwrap();
@@ -1195,6 +1229,54 @@ mod tests {
         assert!(matches!(r, Err(ModelError::Cancelled)));
     }
 
+    /// Overlapped inference (GPU) gives bit-identical stems to the serial path, for both
+    /// input layouts.
+    #[test]
+    fn overlapped_matches_serial() {
+        let arch = ModelArch::RoFormer {
+            n_fft: 512,
+            hop: 128,
+            segment_samples: 8192,
+            overlap: 0.75,
+        };
+        let s = vec![1, 2, 257, 65];
+        let mix = stereo_mix(40_000);
+        for stacked in [true, false] {
+            let run = |gpu: bool| {
+                let net = if stacked {
+                    GainNet {
+                        shapes: vec![vec![1, 4, 257, 65]],
+                        in_names: vec!["mix_spec".into()],
+                        out_names: vec!["stems_spec".into()],
+                        gains: vec![0.3, 0.7],
+                        calls: 0,
+                        gpu,
+                    }
+                } else {
+                    GainNet {
+                        shapes: vec![s.clone(), s.clone()],
+                        in_names: vec!["spec_imag".into(), "spec_real".into()],
+                        out_names: vec!["out_spec_imag".into(), "out_spec_real".into()],
+                        gains: vec![0.3, 0.7],
+                        calls: 0,
+                        gpu,
+                    }
+                };
+                let info = small_info(arch.clone(), vec![StemKind::Vocals, StemKind::Instrumental]);
+                let mut sep =
+                    SpecSeparator::new(info, Box::new(net), &LoadOptions::default()).unwrap();
+                assert_eq!(sep.active_device() != Device::Cpu, gpu);
+                sep.separate(&mix, &mut |_| {}, &AtomicBool::new(false))
+                    .unwrap()
+                    .into_iter()
+                    .map(|(_, b)| b.channels)
+                    .collect::<Vec<_>>()
+            };
+            let (serial, overlapped) = (run(false), run(true));
+            assert!(serial == overlapped, "stacked: {stacked}");
+        }
+    }
+
     #[test]
     fn split_end_to_end_four_stems() {
         // A scaled-down BS-RoFormer with the silverdaw contract, inputs listed imag-first.
@@ -1212,6 +1294,7 @@ mod tests {
             out_names: vec!["out_spec_imag".into(), "out_spec_real".into()],
             gains: gains.clone(),
             calls: 0,
+            gpu: false,
         };
         let info = small_info(
             arch,
@@ -1258,6 +1341,7 @@ mod tests {
             out_names: vec!["stems_spec".into()],
             gains: gains.clone(),
             calls: 0,
+            gpu: false,
         };
         let info = small_info(
             arch,
@@ -1300,6 +1384,7 @@ mod tests {
             out_names: vec![],
             gains: vec![1.0, 1.0, 1.0],
             calls: 0,
+            gpu: false,
         };
         let info = small_info(arch, vec![StemKind::Vocals]);
         let mut sep = SpecSeparator::new(info, Box::new(net), &LoadOptions::default()).unwrap();

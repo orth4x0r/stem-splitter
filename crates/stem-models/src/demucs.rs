@@ -31,13 +31,13 @@
 //! prefer deterministic output) and bag-of-models averaging (htdemucs / htdemucs_6s are bags
 //! of one model).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use rayon::prelude::*;
 use stem_audio::AudioBuffer;
 use stem_audio::stft::{Complex32, Spectrogram, Stft};
 
-use crate::network::{Network, TensorIn, TensorOut};
+use crate::network::{Network, OwnedInput, TensorOut, run_pipelined};
 use crate::{
     Device, LoadOptions, ModelArch, ModelError, ModelInfo, Progress, Result, Separator, StemKind,
     dsp,
@@ -183,47 +183,43 @@ pub(crate) fn demix(
 
     let mut out: Vec<[Vec<f32>; 2]> = (0..s_count).map(|_| [vec![0.0; n], vec![0.0; n]]).collect();
     let mut sum_w = vec![0.0f32; n];
-    let mut wave = vec![0.0f32; p.batch * 2 * seg];
-    let mut spec = vec![0.0f32; p.batch * 4 * plane];
     let batches: Vec<&[usize]> = offsets.chunks(p.batch).collect();
+    // `center_trim` of the chunk at `off`: what `padded_chunk` centred it by.
+    let trim = |off: usize| (seg - seg.min(n - off)) / 2;
+    let overlap = net.device() != Device::Cpu;
 
-    for (bi, batch) in batches.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ModelError::Cancelled);
-        }
+    let prepare = |bi: usize, inputs: &mut Vec<OwnedInput>| -> Result<()> {
+        let batch = batches[bi];
+        inputs.resize_with(2, OwnedInput::default);
+        let (a, b) = inputs.split_at_mut(1);
+        let (mix_buf, spec_buf) = if layout.mix_first {
+            (&mut a[0], &mut b[0])
+        } else {
+            (&mut b[0], &mut a[0])
+        };
         // Padded waveforms, then their spectrograms, per (item, channel).
-        let trims: Vec<usize> = wave
-            .chunks_mut(seg)
-            .enumerate()
-            .map(|(idx, w)| match batch.get(idx / 2) {
-                Some(&off) => padded_chunk(&mix[idx % 2], off, seg, w),
-                None => {
-                    w.fill(0.0);
-                    0
+        let wave = mix_buf.reshape(vec![p.batch, 2, seg]);
+        for (idx, w) in wave.chunks_mut(seg).enumerate() {
+            match batch.get(idx / 2) {
+                Some(&off) => {
+                    padded_chunk(&mix[idx % 2], off, seg, w);
                 }
-            })
-            .collect();
+                None => w.fill(0.0),
+            }
+        }
+        let spec = spec_buf.reshape(vec![p.batch, 4, BINS, frames]);
         spec.par_chunks_mut(2 * plane)
             .zip(wave.par_chunks(seg))
             .for_each(|(planes, w)| {
                 let (re, im) = planes.split_at_mut(plane);
                 spec_planes(stft, w, frames, re, im);
             });
+        Ok(())
+    };
 
-        let mix_in = TensorIn {
-            shape: vec![p.batch, 2, seg],
-            data: &wave,
-        };
-        let spec_in = TensorIn {
-            shape: vec![p.batch, 4, BINS, frames],
-            data: &spec,
-        };
-        let inputs = if layout.mix_first {
-            [mix_in, spec_in]
-        } else {
-            [spec_in, mix_in]
-        };
-        let (freq, time) = find_outputs(net.run(&inputs)?)?;
+    let finish = |bi: usize, outputs: Vec<TensorOut>| -> Result<()> {
+        let batch = batches[bi];
+        let (freq, time) = find_outputs(outputs)?;
         if freq.data.len() != p.batch * s_count * 4 * plane
             || time.data.len() != p.batch * s_count * 2 * seg
         {
@@ -249,7 +245,7 @@ pub(crate) fn demix(
 
         for (item, &off) in batch.iter().enumerate() {
             let chunk_len = seg.min(n - off);
-            let trim = trims[item * 2];
+            let trim = trim(off);
             let w = &weight[..chunk_len];
             for s in 0..s_count {
                 for ch in 0..2 {
@@ -265,7 +261,9 @@ pub(crate) fn demix(
             }
         }
         progress((bi + 1) as f32 / batches.len() as f32);
-    }
+        Ok(())
+    };
+    run_pipelined(net, batches.len(), overlap, cancel, prepare, finish)?;
 
     for src in &mut out {
         for ch in src.iter_mut() {
@@ -417,6 +415,7 @@ mod tests {
     use super::*;
     use crate::catalog::HTDEMUCS_SEGMENT;
     use crate::network::FnNetwork;
+    use crate::network::TensorIn;
 
     #[test]
     fn real_segment_geometry() {
@@ -483,6 +482,12 @@ mod tests {
     /// must come out as (a_s + b_s) * mix after all the padding / overlap-add.
     #[test]
     fn linear_network_end_to_end() {
+        let cpu = linear_network_end_to_end_on(false);
+        let gpu = linear_network_end_to_end_on(true);
+        assert!(cpu == gpu, "overlapped inference changes nothing");
+    }
+
+    fn linear_network_end_to_end_on(gpu: bool) -> Vec<Vec<Vec<f32>>> {
         let seg: usize = 30_000;
         let frames = seg.div_ceil(HOP);
         let a = [0.5f32, 0.0, 0.25];
@@ -524,7 +529,12 @@ mod tests {
             batch_size: Some(2),
             ..Default::default()
         };
-        let mut sep = HtDemucsSeparator::new(info, Box::new(net), &opts).unwrap();
+        let net: Box<dyn Network> = if gpu {
+            Box::new(crate::network::OnGpu(net))
+        } else {
+            Box::new(net)
+        };
+        let mut sep = HtDemucsSeparator::new(info, net, &opts).unwrap();
         assert_eq!(sep.params.segment, seg);
         assert!(!sep.layout.mix_first);
         // 2.5 segments, with a DC offset to exercise the mean/std normalisation.
@@ -578,5 +588,6 @@ mod tests {
             }
         }
         assert_eq!(fr.last(), Some(&Progress::Separating(1.0)));
+        stems.into_iter().map(|(_, b)| b.channels).collect()
     }
 }
