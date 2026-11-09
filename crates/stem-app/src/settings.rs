@@ -226,6 +226,10 @@ pub struct Settings {
     pub stem_cache_gb: f32,
     /// The first-run welcome was seen (or skipped).
     pub welcomed: bool,
+    /// Last few sample searches typed into the URL box, newest first.
+    pub recent_searches: Vec<String>,
+    /// Where those searches go (YouTube or SoundCloud).
+    pub search_site: stem_fetch::SearchSite,
 }
 
 impl Default for Settings {
@@ -253,6 +257,8 @@ impl Default for Settings {
             stem_cache: true,
             stem_cache_gb: 8.0,
             welcomed: false,
+            recent_searches: Vec::new(),
+            search_site: stem_fetch::SearchSite::default(),
         }
     }
 }

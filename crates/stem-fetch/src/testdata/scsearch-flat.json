@@ -1,0 +1,47 @@
+{
+  "id": "soul sample",
+  "title": "soul sample",
+  "_type": "playlist",
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Soundcloud",
+      "id": "1593319843",
+      "url": "https://soundcloud.com/crate-digger/soul-sample-1972",
+      "title": "Soul Sample 1972",
+      "uploader": "Crate Digger",
+      "duration": 94.524,
+      "view_count": 20311
+    },
+    {
+      "_type": "url",
+      "ie_key": "Soundcloud",
+      "id": "1022417770",
+      "url": "https://soundcloud.com/beatsbyjm/chopped-soul-sample-pack",
+      "title": "chopped soul sample pack"
+    },
+    {
+      "_type": "url",
+      "ie_key": "Soundcloud",
+      "id": "873120554",
+      "url": "https://api-v2.soundcloud.com/tracks/873120554",
+      "title": "Free Soul Sample - \"Velvet\"",
+      "uploader": "Loop Kitchen",
+      "duration": 61.0
+    },
+    {
+      "_type": "url",
+      "ie_key": "Soundcloud",
+      "id": "550012345",
+      "url": "https://soundcloud.com/kei-beats/dusty-soul-loop",
+      "title": "Dusty soul loop (prod. ✦ kei)",
+      "uploader": "kei",
+      "duration": 128.0
+    }
+  ],
+  "extractor_key": "SoundcloudSearch",
+  "extractor": "soundcloud:search",
+  "webpage_url": "soul sample",
+  "original_url": "scsearch4:soul sample",
+  "playlist_count": 4
+}

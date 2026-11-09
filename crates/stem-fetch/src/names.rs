@@ -71,7 +71,7 @@ fn local(path: PathBuf) -> std::io::Result<Source> {
 }
 
 /// Input without a scheme that is clearly meant as a file path.
-fn looks_like_path(s: &str) -> bool {
+pub(crate) fn looks_like_path(s: &str) -> bool {
     let b = s.as_bytes();
     let drive =
         b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');

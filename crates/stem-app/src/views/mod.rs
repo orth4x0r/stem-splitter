@@ -15,6 +15,7 @@ mod progress;
 mod queue;
 pub mod refine;
 mod results;
+pub mod search;
 mod section;
 mod settings;
 mod settings_tools;

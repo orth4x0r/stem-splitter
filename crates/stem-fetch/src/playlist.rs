@@ -124,6 +124,12 @@ pub(crate) fn args(url: &str, cookies_from_browser: Option<&str>) -> Vec<String>
 
 /// Run yt-dlp to list `url`'s entries. Stops (and kills yt-dlp) when `cancel` is set.
 pub(crate) fn run(ytdlp: &Path, args: &[String], cancel: &AtomicBool) -> Result<Playlist> {
+    parse_flat_playlist(&run_json(ytdlp, args, cancel)?)
+}
+
+/// Run yt-dlp with `args` (a `--dump-single-json` listing) and return its stdout. Stops (and
+/// kills yt-dlp) when `cancel` is set.
+pub(crate) fn run_json(ytdlp: &Path, args: &[String], cancel: &AtomicBool) -> Result<String> {
     let mut child = process::command(ytdlp)
         .args(args)
         .env("PYTHONIOENCODING", "utf-8")
@@ -164,7 +170,7 @@ pub(crate) fn run(ytdlp: &Path, args: &[String], cancel: &AtomicBool) -> Result<
             ytdlp::error_message(&err).unwrap_or_else(|| format!("exited with {status}")),
         ));
     }
-    parse_flat_playlist(&String::from_utf8_lossy(&out))
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 #[cfg(test)]
