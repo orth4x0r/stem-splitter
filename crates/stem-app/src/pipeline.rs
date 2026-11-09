@@ -319,8 +319,8 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
         format!("Loading {}", req.model.name),
     ));
     send(JobEvent::Progress(None));
-    let mut sep =
-        stem_models::load(&req.model, &model_path, req.device).map_err(|e| e.to_string())?;
+    let mut lease = crate::model_cache::take(&req.model, &model_path, req.device)?;
+    let sep = &mut lease.sep;
     check(cancel)?;
 
     // 4. Separate
@@ -337,6 +337,8 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
     let stems = sep
         .separate(&cut.audio, &mut model_progress(send), cancel)
         .map_err(|e| e.to_string())?;
+    // Kept loaded for the next split (queue, chain, "split again").
+    crate::model_cache::park(lease);
     let stems = cut.trim(stems);
     check(cancel)?;
 

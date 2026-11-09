@@ -18,6 +18,7 @@ mod effects;
 mod export;
 mod fx;
 mod midi;
+mod model_cache;
 mod pads;
 mod paths;
 mod pipeline;

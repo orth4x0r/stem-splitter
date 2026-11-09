@@ -565,23 +565,27 @@ impl Runner for OrtRunner {
         };
         check(cancel)?;
         emit("loading", Some(0.0));
-        let mut sep = stem_models::load(model, &path, self.device).map_err(|e| e.to_string())?;
+        let mut lease = crate::model_cache::take(model, &path, self.device)?;
+        let sep = &mut lease.sep;
         let on = match sep.active_device() {
             // Short: the progress line also names the step and model.
             Device::Cpu if self.device != Device::Cpu => "CPU fallback",
             Device::Cpu => "CPU",
             _ => "",
         };
-        sep.separate(
-            input,
-            &mut |p| match p {
-                Progress::Separating(f) => emit(on, Some(f)),
-                Progress::LoadingModel => emit("loading", Some(0.0)),
-                Progress::Downloading { .. } => {}
-            },
-            cancel,
-        )
-        .map_err(|e| e.to_string())
+        let stems = sep
+            .separate(
+                input,
+                &mut |p| match p {
+                    Progress::Separating(f) => emit(on, Some(f)),
+                    Progress::LoadingModel => emit("loading", Some(0.0)),
+                    Progress::Downloading { .. } => {}
+                },
+                cancel,
+            )
+            .map_err(|e| e.to_string())?;
+        crate::model_cache::park(lease);
+        Ok(stems)
     }
 }
 
