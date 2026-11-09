@@ -16,7 +16,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Rect, Sense, Ui, pos
 
 use crate::theme::{self, motion};
 
-/// Big page title with a gradient underline that draws itself in, and an optional subtitle.
+/// Page title with an optional subtitle. Hierarchy from size and colour, no decoration.
 pub fn page_title(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(4.0);
     ui.label(
@@ -24,18 +24,6 @@ pub fn page_title(ui: &mut Ui, title: &str, subtitle: &str) {
             .font(theme::bold(theme::size::H1))
             .color(theme::TEXT),
     );
-    let (r, _) = ui.allocate_exact_size(vec2(56.0, 3.0), Sense::hover());
-    let grow = motion::ease_out(motion::appear(
-        ui.ctx(),
-        Id::unique(("title-line", title)),
-        0.1,
-        motion::SLOW * 1.6,
-    ));
-    let line = Rect::from_min_size(r.min, vec2(r.width() * grow, r.height()));
-    if line.width() > 1.0 {
-        paint::glow(ui.painter(), line, 2, theme::alpha(theme::PINK, 0.5), 8.0);
-        paint::gradient_rect(ui.painter(), line, 2, 0.0, 1.0, Color32::WHITE);
-    }
     if !subtitle.is_empty() {
         ui.add_space(4.0);
         ui.label(
@@ -47,26 +35,27 @@ pub fn page_title(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(theme::space::M);
 }
 
-/// Small uppercase label above a group of controls, with a tiny accent tick.
+/// Small sentence-case label above a group of controls.
 pub fn overline(ui: &mut Ui, text: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.0;
-        let (r, _) = ui.allocate_exact_size(vec2(3.0, 11.0), Sense::hover());
-        paint::gradient_rect(
-            ui.painter(),
-            Rect::from_center_size(r.center(), vec2(3.0, 9.0)),
-            1,
-            0.0,
-            0.6,
-            Color32::WHITE,
-        );
-        ui.label(
-            egui::RichText::new(text.to_uppercase())
-                .font(theme::semi(theme::size::CAPTION))
-                .color(theme::TEXT_FAINT)
-                .extra_letter_spacing(1.2),
-        );
-    });
+    ui.label(
+        egui::RichText::new(sentence_case(text))
+            .font(theme::semi(theme::size::SMALL))
+            .color(theme::TEXT_FAINT),
+    );
+}
+
+/// "Stem cache" / "stem cache" -> "Stem cache": section labels are sentence case.
+pub fn sentence_case(text: &str) -> String {
+    let lower = if text.chars().any(|c| c.is_lowercase()) {
+        text.to_owned()
+    } else {
+        text.to_lowercase()
+    };
+    let mut c = lower.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
 }
 
 /// A centred empty-state illustration drawn in `rect`: a glowing gradient disc with the icon,
@@ -102,22 +91,18 @@ pub fn empty_state(ui: &Ui, rect: Rect, icon: icons::Icon, title: &str, body: &s
     }
     let rr = 32.0 * a;
     if rr > 1.0 {
-        let disc = Rect::from_center_size(c, vec2(2.0 * rr, 2.0 * rr));
         paint::glow_circle(p, c, rr, theme::alpha(theme::PINK, 0.35), 24.0);
-        paint::gradient_rect(
-            p,
-            disc,
-            CornerRadius::same(rr as u8),
-            0.0,
-            1.0,
-            Color32::WHITE,
+        p.circle(
+            c,
+            rr,
+            theme::CARD_HI,
+            egui::Stroke::new(1.0, theme::STROKE_HI),
         );
-        paint::glass_sheen(p, disc, CornerRadius::same(rr as u8), 1.0);
         icons::paint(
             p,
-            Rect::from_center_size(c, vec2(26.0, 26.0) * a),
+            Rect::from_center_size(c, vec2(24.0, 24.0) * a),
             icon,
-            Color32::WHITE,
+            theme::TEXT_DIM,
         );
     }
     p.text(
@@ -168,7 +153,7 @@ pub fn stat_tile(
     p.text(
         pos2(r.left() + 18.0, r.bottom() - 16.0),
         Align2::LEFT_CENTER,
-        label.to_uppercase(),
+        crate::widgets::sentence_case(label),
         theme::semi(10.5),
         theme::TEXT_FAINT,
     );

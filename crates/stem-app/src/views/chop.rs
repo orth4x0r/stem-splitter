@@ -180,8 +180,7 @@ fn label(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .font(theme::semi(10.5))
-            .color(theme::TEXT_FAINT)
-            .extra_letter_spacing(0.8),
+            .color(theme::TEXT_FAINT),
     );
 }
 
@@ -213,7 +212,7 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
     let mut retarget = false;
     // Row 1: stem, mode, region.
     ui.horizontal(|ui| {
-        label(ui, "STEM");
+        label(ui, "Stem");
         for (i, t) in s.tracks.iter().enumerate() {
             if buttons::chip(
                 ui,
@@ -230,7 +229,7 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
             }
         }
         ui.add_space(14.0);
-        label(ui, "CHOP BY");
+        label(ui, "Chop by");
         let opts: Vec<(ChopMode, &str)> = ChopMode::ALL.iter().map(|m| (*m, m.label())).collect();
         if buttons::segmented(ui, "chop-mode", &mut chop.settings.mode, &opts) {
             changed = true;
@@ -238,7 +237,7 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
         if !narrow {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 retarget |= region_picker(ui, chop, selection, it);
-                label(ui, "REGION");
+                label(ui, "Region");
             });
         }
     });
@@ -247,15 +246,15 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
         ui.set_min_height(30.0);
         match chop.settings.mode {
             ChopMode::Transients => {
-                label(ui, "SENSITIVITY");
+                label(ui, "Sensitivity");
                 changed |= buttons::slider(ui, &mut chop.settings.sensitivity, 0.0..=100.0, "%", 170.0);
                 ui.add_space(12.0);
-                label(ui, "MIN GAP");
+                label(ui, "Min gap");
                 changed |=
                     buttons::slider(ui, &mut chop.settings.min_gap_ms, 20.0..=500.0, " ms", 150.0);
             }
             ChopMode::Grid if has_grid => {
-                label(ui, "EVERY");
+                label(ui, "Every");
                 let opts: Vec<(GridChoice, &str)> =
                     GridChoice::ALL.iter().map(|g| (*g, g.label())).collect();
                 changed |= buttons::segmented(ui, "chop-grid", &mut chop.settings.grid, &opts);
@@ -268,7 +267,7 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
                             .color(theme::WARN),
                     );
                 }
-                label(ui, "PARTS");
+                label(ui, "Parts");
                 let opts = [
                     (4u32, "4"),
                     (8, "8"),
@@ -310,7 +309,7 @@ fn toolbar_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Inten
     if narrow {
         ui.horizontal(|ui| {
             ui.set_min_height(30.0);
-            label(ui, "REGION");
+            label(ui, "Region");
             retarget |= region_picker(ui, chop, selection, it);
         });
     }
@@ -726,7 +725,7 @@ fn export_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Intent
     let ui = &mut cui;
     ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
     ui.horizontal(|ui| {
-        label(ui, "EXPORT KIT");
+        label(ui, "Export kit");
         let base = chop_export::base_name(&s.title, stem);
         ui.label(
             egui::RichText::new(format!(
@@ -823,10 +822,9 @@ fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mu
     );
     hui.spacing_mut().item_spacing.x = 5.0;
     hui.label(
-        egui::RichText::new("PADS")
+        egui::RichText::new("Pads")
             .font(theme::semi(10.5))
-            .color(theme::TEXT_FAINT)
-            .extra_letter_spacing(0.8),
+            .color(theme::TEXT_FAINT),
     );
     hui.add_space(6.0);
     for pg in 0..pages.min(8) {

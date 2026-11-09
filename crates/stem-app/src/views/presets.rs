@@ -41,11 +41,11 @@ fn plan(app: &StemApp, chain: &Chain) -> Result<Plan, String> {
 /// Badge text and colour for a preset's shape.
 fn kind_badge(chain: &Chain) -> (&'static str, Color32) {
     if chain.steps.iter().any(Step::is_ensemble) {
-        ("ENSEMBLE", theme::CYAN)
+        ("Ensemble", theme::TEXT_FAINT)
     } else if chain.steps.len() > 1 {
-        ("CHAIN", theme::PINK)
+        ("Chain", theme::TEXT_FAINT)
     } else {
-        ("1 MODEL", theme::VIOLET)
+        ("1 model", theme::TEXT_FAINT)
     }
 }
 
@@ -162,11 +162,7 @@ fn flow_line(app: &StemApp, p: &egui::Painter, left: Pos2, max_x: f32, chain: &C
             .models
             .first()
             .map_or(String::new(), |m| model_label(app, m));
-        let color = if step.is_ensemble() {
-            theme::CYAN
-        } else {
-            [theme::VIOLET, theme::PINK, theme::CYAN][i % 3]
-        };
+        let color = theme::TEXT_FAINT;
         // The arrow says "on the stem before"; the Models page spells the input out.
         let text = if step.is_ensemble() {
             format!("{first} +{}", step.models.len() - 1)
@@ -321,7 +317,7 @@ pub fn strip(app: &mut StemApp, ui: &mut egui::Ui) {
         overline(ui, "Preset");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             manage = Button::ghost("Edit presets")
-                .icon(Icon::Sparkle)
+                .icon(Icon::Settings)
                 .height(28.0)
                 .show(ui)
                 .clicked();
@@ -557,7 +553,7 @@ fn big_card(
             badge(
                 p,
                 pos2(b.left() - 6.0, inner.top() - 2.0),
-                "YOURS",
+                "Yours",
                 theme::GOOD,
             );
         }
@@ -592,7 +588,7 @@ fn big_card(
                 p.text(
                     pos2(inner.left(), foot_y),
                     Align2::LEFT_CENTER,
-                    "OUT",
+                    "Out",
                     theme::semi(10.0),
                     theme::TEXT_FAINT,
                 );
@@ -674,11 +670,7 @@ fn nodes(app: &StemApp, p: &egui::Painter, area: Rect, chain: &Chain) {
     for (i, step) in chain.steps.iter().enumerate() {
         let x = area.left() + i as f32 * (w + link);
         let r = Rect::from_min_size(pos2(x, area.top()), vec2(w, area.height()));
-        let color = if step.is_ensemble() {
-            theme::CYAN
-        } else {
-            [theme::VIOLET, theme::PINK, theme::CYAN][i % 3]
-        };
+        let color = theme::TEXT_FAINT;
         p.rect(
             r,
             CornerRadius::same(12),
@@ -881,11 +873,7 @@ pub fn editor(app: &mut StemApp, ctx: &egui::Context) {
                 for i in 0..n_steps {
                     let inputs = produced_before(app, &ed.preset.chain, i);
                     let step = &mut ed.preset.chain.steps[i];
-                    let color = if step.is_ensemble() {
-                        theme::CYAN
-                    } else {
-                        [theme::VIOLET, theme::PINK, theme::CYAN][i % 3]
-                    };
+                    let color = theme::TEXT_FAINT;
                     let frame = egui::Frame::new()
                         .fill(theme::alpha(color, 0.06))
                         .stroke(Stroke::new(1.0, theme::alpha(color, 0.35)))

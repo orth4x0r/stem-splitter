@@ -227,7 +227,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             if view.is_zoomed() {
                 format!("STEMS  ·  {:.0}×", view.zoom())
             } else {
-                "STEMS".to_owned()
+                "Stems".to_owned()
             },
             theme::semi(10.5),
             theme::TEXT_FAINT,
@@ -552,7 +552,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             ui.painter().circle_filled(r.center(), 4.0, theme::WARN);
             ui.label(
                 egui::RichText::new(
-                    "No audio output device — playback is off, sample export still works.",
+                    "No audio output device. Playback is off, sample export still works.",
                 )
                 .font(theme::regular(12.5))
                 .color(theme::TEXT_DIM),
@@ -797,7 +797,7 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                     ui.vertical(|ui| {
                         ui.add_space(15.0);
                         ui.label(
-                            egui::RichText::new("SELECTION")
+                            egui::RichText::new("Selection")
                                 .font(theme::semi(10.5))
                                 .color(theme::TEXT_FAINT),
                         );

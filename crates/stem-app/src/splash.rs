@@ -152,7 +152,7 @@ pub fn paint_frame(p: &Painter, screen: Rect, t: f32) {
         p.text(
             pos2(c.x, y + 34.0),
             Align2::CENTER_CENTER,
-            "AI STEMS  ·  SAMPLES  ·  FLIPS",
+            "Stems for samples and flips",
             theme::semi(12.0),
             theme::alpha(theme::TEXT_DIM, tag),
         );
@@ -164,11 +164,15 @@ pub fn paint_frame(p: &Painter, screen: Rect, t: f32) {
 pub fn logo_mark(p: &Painter, tile: Rect, bars: &[f32], glow: f32, opacity: f32, colored: bool) {
     let s = tile.width();
     let r = CornerRadius::same((s * 0.32).min(255.0) as u8);
-    if glow > 0.0 {
-        paint::glow(p, tile, r, theme::alpha(theme::PINK, 0.5 * glow), s * 0.4);
-    }
-    paint::gradient_rect(p, tile, r, 0.0, 1.0, theme::alpha(Color32::WHITE, opacity));
-    paint::glass_sheen(p, tile, r, 0.6);
+    // Flat graphite tile with a hairline; the bars carry the stem colours.
+    let _ = glow;
+    p.rect(
+        tile,
+        r,
+        theme::alpha(theme::CARD_HI, opacity),
+        egui::Stroke::new(1.0, theme::alpha(theme::STROKE_HI, opacity)),
+        egui::StrokeKind::Inside,
+    );
     let bw = s * 0.077;
     let step = s * 0.132;
     let x0 = tile.center().x - 2.0 * step - bw / 2.0;
@@ -183,10 +187,11 @@ pub fn logo_mark(p: &Painter, tile: Rect, bars: &[f32], glow: f32, opacity: f32,
             pos2(x, tile.center().y - bh / 2.0),
             pos2(x + bw, tile.center().y + bh / 2.0),
         );
+        // One channel colour per bar: the mark is a tiny mixer.
         let col = if colored {
-            theme::lerp_color(BAR_COLORS[i], Color32::WHITE, 0.55)
+            theme::lerp_color(BAR_COLORS[i], Color32::WHITE, 0.2)
         } else {
-            Color32::from_rgba_unmultiplied(255, 255, 255, 235)
+            BAR_COLORS[i]
         };
         p.rect_filled(
             bar,

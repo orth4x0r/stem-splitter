@@ -9,8 +9,7 @@
 use std::f32::consts::{PI, TAU};
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, TextureOptions, Vec2,
-    pos2, vec2,
+    self, Align2, Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2,
 };
 
 use crate::theme::{self, motion};
@@ -89,58 +88,6 @@ impl Fx {
 
 // ---- ambient background --------------------------------------------------------------------
 
-/// Grain + faint scanlines, baked once into a small tiling texture.
-fn grain_texture(ctx: &egui::Context) -> egui::TextureId {
-    paint::cached_texture(
-        ctx,
-        "grain",
-        [128, 128],
-        TextureOptions::NEAREST_REPEAT,
-        |x, y| {
-            // Integer hash -> white noise.
-            let mut h = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
-            h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
-            h ^= h >> 16;
-            let n = (h & 0xff) as f32 / 255.0;
-            if y % 3 == 0 {
-                // Scanline: a whisper of black.
-                Color32::from_black_alpha(9)
-            } else {
-                Color32::from_white_alpha((n * n * 7.0) as u8)
-            }
-        },
-    )
-}
-
-/// Paint the window background: base fill, drifting colour blobs, grain, vignette.
-/// `colors` tints the blobs (accent by default, stem colours when a session is open);
-/// `energy` (0..1) brightens them (running job, playing audio).
-pub fn ambient(painter: &Painter, screen: Rect, fx: &Fx, colors: &[Color32], energy: f32) {
-    painter.rect_filled(screen, CornerRadius::ZERO, theme::BG);
-    let t = fx.clock as f32;
-    let (w, h) = (screen.width(), screen.height());
-    let base_r = w.min(h) * 0.34;
-    let n = colors.len().clamp(1, 5);
-    for i in 0..n {
-        let fi = i as f32;
-        let c = colors[i % colors.len()];
-        let ph = fi * 2.17;
-        let cx = screen.left() + w * (0.5 + 0.38 * (t * (0.031 + 0.007 * fi) + ph).sin());
-        let cy = screen.top() + h * (0.5 + 0.36 * (t * (0.023 + 0.006 * fi) + ph * 1.3).cos());
-        let r = base_r * (1.5 + 0.3 * (t * 0.05 + fi).sin());
-        let a = 0.13 + 0.06 * energy + 0.12 * fx.master;
-        paint::soft_disc(painter, pos2(cx, cy), r, theme::alpha(c, a));
-    }
-    // Grain / scanlines: a single tiled quad.
-    let tex = grain_texture(painter.ctx());
-    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(w / 128.0, h / 128.0));
-    painter.add(
-        egui::epaint::RectShape::filled(screen, CornerRadius::ZERO, Color32::WHITE)
-            .with_texture(tex, uv),
-    );
-    vignette(painter, screen, 150);
-}
-
 /// Darken the window edges (8-vertex frame mesh).
 pub fn vignette(painter: &Painter, rect: Rect, alpha: u8) {
     let inner = rect.shrink2(vec2(rect.width() * 0.22, rect.height() * 0.2));
@@ -171,49 +118,6 @@ pub fn vignette(painter: &Painter, rect: Rect, alpha: u8) {
 }
 
 // ---- aurora --------------------------------------------------------------------------------
-
-/// Stem-coloured aurora curtains rising from the bottom of `rect`. `curtains` holds each
-/// colour with its intensity (0..1). ~40 columns per curtain.
-pub fn aurora(painter: &Painter, rect: Rect, t: f64, curtains: &[(Color32, f32)]) {
-    let p = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-    let t = t as f32;
-    let n = curtains.len().max(1) as f32;
-    let cols = 40;
-    for (i, (c, k)) in curtains.iter().enumerate() {
-        if *k <= 0.01 {
-            continue;
-        }
-        let fi = i as f32;
-        let center = (fi + 0.5) / n;
-        let mut mesh = egui::Mesh::default();
-        for j in 0..=cols {
-            let f = j as f32 / cols as f32;
-            let x = rect.left() + rect.width() * f;
-            let wave = 0.55
-                + 0.22 * (f * 6.3 + t * 0.9 + fi * 1.7).sin()
-                + 0.12 * (f * 13.1 - t * 1.6 + fi).sin();
-            let hgt = rect.height() * wave * (0.55 + 0.45 * k);
-            // Each curtain is brightest around its own slot, fading across the card.
-            let d = (f - center) / (0.9 / n + 0.18);
-            let env = (-d * d).exp() * k;
-            let top = rect.bottom() - hgt;
-            let mid = rect.bottom() - hgt * 0.45;
-            let a = 0.33 * env;
-            mesh.colored_vertex(pos2(x, top), Color32::TRANSPARENT);
-            mesh.colored_vertex(pos2(x, mid), theme::alpha(*c, a));
-            mesh.colored_vertex(pos2(x, rect.bottom()), theme::alpha(*c, a * 0.25));
-            if j > 0 {
-                let b = (3 * j) as u32;
-                let a0 = b - 3;
-                mesh.add_triangle(a0, a0 + 1, b);
-                mesh.add_triangle(a0 + 1, b + 1, b);
-                mesh.add_triangle(a0 + 1, a0 + 2, b + 1);
-                mesh.add_triangle(a0 + 2, b + 2, b + 1);
-            }
-        }
-        p.add(Shape::mesh(mesh));
-    }
-}
 
 // ---- celebration burst ---------------------------------------------------------------------
 

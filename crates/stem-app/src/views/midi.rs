@@ -666,7 +666,7 @@ fn piano_roll(ui: &mut Ui, rect: Rect, sheet: &mut MidiSheet, color: Color32) ->
     p.text(
         pos2(keys.left() + 10.0, ruler.center().y + 1.0),
         Align2::LEFT_CENTER,
-        "BAR",
+        "Bar",
         theme::semi(9.5),
         theme::TEXT_FAINT,
     );

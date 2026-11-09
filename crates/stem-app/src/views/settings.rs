@@ -173,7 +173,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                     );
                 }
                 ui.label(
-                    egui::RichText::new("Sites change often — update if a link stops working.")
+                    egui::RichText::new("Sites change often. Update if a link stops working.")
                         .font(theme::regular(12.0))
                         .color(theme::TEXT_FAINT),
                 );

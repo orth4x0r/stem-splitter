@@ -51,46 +51,20 @@ fn hero(ui: &mut egui::Ui, compact: bool) {
         theme::size::DISPLAY
     };
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size * 1.25), Sense::hover());
-    let p = ui.painter();
-    let a = "Pull any track ";
-    let b = "apart.";
-    let ga = p.layout_no_wrap(a.into(), theme::bold(size), theme::TEXT);
-    let gb = p.layout_no_wrap(b.into(), theme::bold(size), theme::TEXT);
-    let total = ga.size().x + gb.size().x;
-    let x = r.center().x - total / 2.0;
-    let y = r.center().y;
-    // A neon underglow behind the gradient word.
-    let word = Rect::from_min_size(
-        pos2(x + ga.size().x, y - gb.size().y * 0.25),
-        vec2(gb.size().x, gb.size().y * 0.5),
-    );
-    paint::soft_disc(
-        p,
-        word.center(),
-        gb.size().x * 0.9,
-        theme::alpha(theme::PINK, 0.16),
-    );
-    p.galley(pos2(x, y - ga.size().y / 2.0), ga, theme::TEXT);
-    let t = ui.input(|i| i.time);
-    let u = if motion::reduced() {
-        0.0
-    } else {
-        (t * 0.05) as f32
-    };
-    paint::gradient_text(
-        p,
-        pos2(x + total - gb.size().x, y),
-        Align2::LEFT_CENTER,
-        b,
+    ui.painter().text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        "Pull any track apart",
         theme::bold(size),
-        (u, u + 0.9),
-        1.0,
+        theme::TEXT,
     );
     ui.add_space(2.0);
     ui.label(
-        egui::RichText::new("Paste a link or drop a file — AI splits it into vocals, drums, bass and more, ready to chop.")
-            .font(theme::regular(15.0))
-            .color(theme::TEXT_DIM),
+        egui::RichText::new(
+            "Paste a link or drop a file to get vocals, drums, bass and the rest as separate stems",
+        )
+        .font(theme::regular(15.0))
+        .color(theme::TEXT_DIM),
     );
 }
 
@@ -104,7 +78,7 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         .animate_bool_with_time(id.with("f"), focused, motion::SLOW);
     let has_text = !app.url_input.trim().is_empty();
     let p = ui.painter();
-    let rr = CornerRadius::same(19);
+    let rr = CornerRadius::same(14);
     paint::glow(
         p,
         rect.translate(vec2(0.0, 10.0)),
@@ -112,34 +86,18 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         Color32::from_black_alpha(120),
         30.0,
     );
-    paint::glow(
-        p,
+    // Focus brightens the hairline; no glow, no moving gradient.
+    let _ = now;
+    p.rect(
         rect,
         rr,
-        theme::alpha(theme::VIOLET, 0.10 + 0.28 * f),
-        18.0 + 14.0 * f,
+        theme::GLASS,
+        Stroke::new(
+            1.0,
+            theme::lerp_color(theme::STROKE_HI, theme::TEXT_FAINT, f),
+        ),
+        StrokeKind::Inside,
     );
-    if f > 0.0 {
-        // Gradient border when focused: gradient rect under a slightly smaller fill.
-        let u = (now * 0.08) as f32;
-        paint::gradient_rect(
-            p,
-            rect,
-            rr,
-            u,
-            u + 1.0,
-            Color32::from_white_alpha((255.0 * f) as u8),
-        );
-        p.rect_filled(rect.shrink(1.5), CornerRadius::same(18), theme::CARD);
-    } else {
-        p.rect(
-            rect,
-            rr,
-            theme::GLASS,
-            Stroke::new(1.0, theme::STROKE_HI),
-            StrokeKind::Inside,
-        );
-    }
     paint::glass_sheen(p, rect, rr, 0.4);
     let ic = pos2(rect.left() + 30.0, rect.center().y);
     if f > 0.0 {
@@ -149,7 +107,7 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         p,
         Rect::from_center_size(ic, vec2(18.0, 18.0)),
         Icon::Link,
-        theme::lerp_color(theme::TEXT_FAINT, theme::PINK, f),
+        theme::lerp_color(theme::TEXT_FAINT, theme::TEXT, f),
     );
 
     let btn_w = 136.0;
@@ -167,10 +125,8 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
             .id(id)
             .frame(egui::Frame::NONE)
             .hint_text(
-                egui::RichText::new(
-                    "Paste YouTube, X, SoundCloud or audio links (several queue up)…",
-                )
-                .color(theme::TEXT_FAINT),
+                egui::RichText::new("Paste a YouTube, X, SoundCloud or audio link")
+                    .color(theme::TEXT_FAINT),
             )
             .font(theme::regular(16.0))
             .text_color(theme::TEXT)
@@ -197,8 +153,8 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         );
     }
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect));
-    let go = Button::primary("Split it")
-        .icon(Icon::Sparkle)
+    let go = Button::primary("Split")
+        .icon(Icon::Split)
         .min_width(btn_w)
         .height(42.0)
         .tooltip("Split (Enter)")
@@ -266,7 +222,7 @@ fn platforms(ui: &mut egui::Ui) {
         ("X / Twitter", Color32::from_rgb(200, 200, 220)),
         ("SoundCloud", Color32::from_rgb(255, 136, 40)),
         ("Bandcamp", Color32::from_rgb(98, 154, 169)),
-        ("Direct links", theme::CYAN),
+        ("Direct links", theme::TEXT_FAINT),
     ];
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -343,33 +299,9 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64, height: f32) {
     if let Some(ptr) = resp.hover_pos() {
         paint::spotlight(p, rect, ptr, theme::VIOLET, hover);
     }
-    // Equaliser watermark across the zone; bars near the pointer swell (follows the mouse, so
-    // it costs nothing while the pointer rests).
-    let mid = rect.center().y + 18.0;
-    let ptr_x = resp.hover_pos().map(|p| p.x);
-    let n = 96;
-    for i in 0..n {
-        let f = i as f32 / n as f32;
-        let x = rect.left() + 30.0 + f * (rect.width() - 60.0);
-        let base = ((f * 37.0).sin() * 0.5 + 0.5)
-            * ((f * 7.0 + 1.0).sin() * 0.5 + 0.6)
-            * (1.0 - (f - 0.5).abs() * 1.5).max(0.1);
-        let near = ptr_x.map_or(0.0, |px| {
-            let d = (x - px) / 90.0;
-            (-d * d).exp()
-        });
-        let wob = 0.75 + 0.7 * near * hover;
-        let h = 46.0 * base * wob;
-        let c = theme::alpha(theme::accent_at(f), 0.06 + 0.14 * active);
-        p.rect_filled(
-            Rect::from_center_size(pos2(x, mid), vec2(3.0, h.max(2.0))),
-            CornerRadius::same(1),
-            c,
-        );
-    }
     // Rim: a quiet hairline at rest, marching neon dashes on hover / drag.
     if active > 0.01 {
-        let stroke_c = theme::alpha(theme::accent_at((now * 0.15) as f32), active);
+        let stroke_c = theme::lerp_color(theme::STROKE_HI, theme::TEXT_DIM, active);
         let march = if motion::reduced() {
             0.0
         } else {
@@ -398,41 +330,22 @@ fn drop_zone(app: &mut StemApp, ui: &mut egui::Ui, now: f64, height: f32) {
 
     if !app.drop_hover {
         let c = pos2(rect.center().x, rect.top() + height * 0.33);
-        let lift = motion::bouncy(
-            ui.ctx(),
-            resp.id.with("lift"),
-            if resp.hovered() { -4.0 } else { 0.0 },
-        );
-        let rr = 30.0 + 2.0 * hover;
-        let c = c + vec2(0.0, lift);
-        paint::glow_circle(
-            p,
+        // A quiet icon well; hover lifts its hairline, nothing orbits or glows.
+        let rr = 28.0;
+        p.circle(
             c,
             rr,
-            theme::alpha(theme::PINK, 0.25 + 0.3 * active),
-            20.0 + 10.0 * hover,
+            theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 44, 48), hover),
+            Stroke::new(
+                1.0,
+                theme::lerp_color(theme::STROKE_HI, theme::TEXT_FAINT, hover),
+            ),
         );
-        let disc = Rect::from_center_size(c, vec2(2.0 * rr, 2.0 * rr));
-        let u = (now * 0.1) as f32 * hover;
-        paint::gradient_rect(
-            p,
-            disc,
-            CornerRadius::same(rr as u8),
-            u,
-            u + 1.0,
-            Color32::WHITE,
-        );
-        paint::glass_sheen(p, disc, CornerRadius::same(rr as u8), 1.0);
-        // Orbiting ring on hover.
-        if hover > 0.0 {
-            let a0 = (now * 2.0) as f32;
-            paint::gradient_arc(p, c, rr + 9.0, a0, a0 + 2.2 * hover, 2.0, a0 * 0.1, hover);
-        }
         icons::paint(
             p,
-            Rect::from_center_size(c, vec2(24.0, 24.0)),
+            Rect::from_center_size(c, vec2(22.0, 22.0)),
             Icon::Download,
-            Color32::WHITE,
+            theme::lerp_color(theme::TEXT_DIM, theme::TEXT, hover),
         );
 
         p.text(

@@ -16,7 +16,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     page_title(
         ui,
         "Models",
-        "Pick the brain that does the splitting. Models download once and live on your machine.",
+        "The models that split your tracks. Each one downloads once and stays on your machine.",
     );
     device_picker(app, ui);
     ui.add_space(22.0);
@@ -33,7 +33,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             r,
             Icon::Models,
             "No models yet",
-            "The model registry is empty — stem-models isn't wired up.",
+            "The model registry is empty. stem-models isn't wired up.",
         );
         return;
     }
@@ -417,7 +417,7 @@ pub fn device_picker(app: &mut StemApp, ui: &mut egui::Ui) {
                 .ctx()
                 .animate_bool_with_time(resp.id.with("s"), sel, 0.18);
             let p = ui.painter();
-            let accent = if gpu { theme::GOOD } else { theme::CYAN };
+            let accent = if gpu { theme::GOOD } else { theme::TEXT_FAINT };
             if s > 0.0 {
                 paint::glow(
                     p,
@@ -438,10 +438,8 @@ pub fn device_picker(app: &mut StemApp, ui: &mut egui::Ui) {
             icons::paint(
                 p,
                 ir,
-                if gpu {
+                if gpu || dev == stem_models::Device::Auto {
                     Icon::Chip
-                } else if dev == stem_models::Device::Auto {
-                    Icon::Sparkle
                 } else {
                     Icon::Settings
                 },

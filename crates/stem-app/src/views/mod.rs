@@ -37,9 +37,9 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
 
-    // Ambient room behind everything (panels are glass, so it shows through).
-    let (colors, energy) = ambient_mood(app);
-    crate::effects::ambient(ui.painter(), screen, &app.fx, &colors, energy);
+    // A plain graphite room: no drifting colour washes behind the chrome.
+    ui.painter()
+        .rect_filled(screen, egui::CornerRadius::ZERO, theme::BG);
 
     chrome::header(app, ui);
     chrome::sidebar(app, ui);
@@ -122,26 +122,6 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
         chrome::drop_overlay(&ctx);
     }
     crate::effects::show_burst(&ctx, &mut app.fx, area);
-}
-
-/// Colours and energy for the ambient background: the accent trio at rest, the job's or
-/// session's stem colours when there is music on screen.
-fn ambient_mood(app: &StemApp) -> (Vec<Color32>, f32) {
-    if let Some(j) = &app.job {
-        let mut c: Vec<Color32> = j.stems.iter().map(|k| theme::stem_color(*k)).collect();
-        c.push(theme::VIOLET);
-        return (c, 0.6);
-    }
-    if let Some(s) = &app.session
-        && app.page == Page::Split
-    {
-        let c = s.tracks.iter().map(|t| theme::stem_color(t.kind)).collect();
-        return (c, 0.25);
-    }
-    (
-        vec![theme::VIOLET, theme::PINK, theme::CYAN, theme::VIOLET],
-        0.0,
-    )
 }
 
 /// Soft fades at the top and bottom of the scrolling page, so content dissolves into the

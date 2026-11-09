@@ -35,31 +35,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(vec2(w, 420.0), Sense::hover());
         let painter = ui.painter().clone();
         let p = &painter;
-        let rr = CornerRadius::same(24);
-        paint::glass(p, rect, rr, Some(theme::alpha(theme::VIOLET, 0.08)), 0.0);
-
-        // Aurora in the stems' colours rises as each stem comes out of the model.
-        let cur_idx = job.stage.index();
-        let sep = if job.stage == Stage::Separating {
-            job.frac.unwrap_or(0.0)
-        } else if cur_idx > Stage::Separating.index() {
-            1.0
-        } else {
-            0.0
-        };
-        let n_st = job.stems.len().max(1) as f32;
-        let curtains: Vec<_> = job
-            .stems
-            .iter()
-            .enumerate()
-            .map(|(i, k)| {
-                let lit = ((sep * n_st) - i as f32).clamp(0.0, 1.0);
-                (theme::stem_color(*k), 0.35 + 0.65 * lit)
-            })
-            .collect();
-        let aurora_t = if motion::reduced() { 0.0 } else { t };
-        crate::effects::aurora(p, rect.shrink(1.0), aurora_t, &curtains);
-        paint::inner_glow(p, rect, rr, theme::alpha(theme::VIOLET, 0.25));
+        let rr = CornerRadius::same(16);
+        paint::glass(p, rect, rr, None, 0.0);
 
         // ---- left: vinyl + ring
         let c = pos2(rect.left() + 200.0, rect.center().y);
@@ -80,11 +57,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let x = rect.left() + 400.0;
         let mut y = rect.top() + 48.0;
         let stage_label = if job.reopening {
-            "LOADING SESSION"
+            "Loading session"
         } else if job.preparing {
-            "LOADING TRACK"
+            "Loading track"
         } else {
-            "SPLITTING"
+            "Splitting"
         };
         let pulse = paint::pulse(t, 1.2);
         p.circle_filled(
@@ -301,7 +278,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         p.text(
             pos2(x, sy),
             Align2::LEFT_CENTER,
-            "STEMS",
+            "Stems",
             theme::semi(10.5),
             theme::TEXT_FAINT,
         );
@@ -372,7 +349,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         ui.add_space(14.0);
         ui.label(
             egui::RichText::new(
-                "Tip: you can keep browsing — the header keeps an eye on it and we'll ping you when the stems are ready.",
+                "You can keep browsing. The header shows the progress and a notice appears when the stems are ready.",
             )
             .font(theme::regular(12.5))
             .color(theme::TEXT_FAINT),
