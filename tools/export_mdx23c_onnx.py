@@ -184,6 +184,45 @@ def verify(model, cfg):
     return core, spec, out
 
 
+def decompose_instance_norms(model):
+    """Swap every InstanceNorm2d for the same maths written as ReduceMean/Sub/Mul/Sqrt.
+
+    DirectML's InstanceNormalization returns NaN on RDNA2 GPUs for some shapes (seen on an
+    RX 6700S and a Radeon 680M with [1, 256, 128, 512] in the de-reverb model), so the exported
+    graph avoids that operator altogether. Output is identical up to float rounding.
+    """
+    import torch
+
+    class Manual(torch.nn.Module):
+        def __init__(self, norm):
+            super().__init__()
+            self.eps = norm.eps
+            self.affine = norm.affine
+            if norm.affine:
+                self.weight = norm.weight
+                self.bias = norm.bias
+
+        def forward(self, x):
+            mean = x.mean(dim=(2, 3), keepdim=True)
+            centred = x - mean
+            var = (centred * centred).mean(dim=(2, 3), keepdim=True)
+            y = centred / torch.sqrt(var + self.eps)
+            if self.affine:
+                y = y * self.weight[None, :, None, None] + self.bias[None, :, None, None]
+            return y
+
+    swapped = 0
+    for parent in list(model.modules()):
+        for name, child in list(parent.named_children()):
+            if isinstance(child, torch.nn.InstanceNorm2d):
+                if child.track_running_stats:
+                    sys.exit(f"{name}: InstanceNorm2d with running stats is not supported here")
+                setattr(parent, name, Manual(child))
+                swapped += 1
+    print(f"replaced {swapped} InstanceNorm2d layers with plain ops (DirectML workaround)")
+    return model
+
+
 def selftest(mdx23c, out_dir):
     import torch
 
@@ -234,6 +273,8 @@ def main():
     ap.add_argument("--msst", help="a Music-Source-Separation-Training clone to import the model from")
     ap.add_argument("--allow-unpinned", action="store_true",
                     help="use MSST model files that differ from the tested ones")
+    ap.add_argument("--keep-instance-norm", action="store_true",
+                    help="export InstanceNormalization nodes as-is (they give NaN on DirectML/RDNA2)")
     ap.add_argument("--random-weights", action="store_true",
                     help="skip the checkpoint (checks the export and its size, not a usable model)")
     args = ap.parse_args()
@@ -253,6 +294,8 @@ def main():
         if args.ckpt and mm.sha256(ckpt) != spec["sha256"]:
             print(f"warning: {ckpt} is not the tested checkpoint (sha256 {spec['sha256']})")
         mm.load_state_dict(model, ckpt)
+    if not args.keep_instance_norm:
+        decompose_instance_norms(model)
     core, example, out = verify(model, cfg)
     path = mm.export_onnx(core, example, Path(args.out_dir) / spec["out"], "mix_spec", "stems_spec")
     err = mm.check_onnx(path, example, out, "mix_spec")

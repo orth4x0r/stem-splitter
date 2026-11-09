@@ -364,7 +364,15 @@ pub fn is_out_of_memory(err: &ModelError) -> bool {
         || m.contains("bad_alloc")
 }
 
-/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU runs out of memory.
+/// True when every sample of every stem is a finite number.
+pub fn all_finite(stems: &[(StemKind, AudioBuffer)]) -> bool {
+    stems
+        .iter()
+        .all(|(_, b)| b.channels.iter().all(|c| c.iter().all(|v| v.is_finite())))
+}
+
+/// Wraps a GPU separator and redoes the whole separation on the CPU if the GPU runs out of memory
+/// or returns non-finite output.
 struct OomFallback {
     inner: Box<dyn Separator>,
     model_path: PathBuf,
@@ -382,15 +390,20 @@ impl Separator for OomFallback {
         progress: &mut dyn FnMut(Progress),
         cancel: &AtomicBool,
     ) -> Result<Vec<(StemKind, AudioBuffer)>> {
-        match self.inner.separate(mix, progress, cancel) {
-            Err(e) if self.inner.active_device() != Device::Cpu && is_out_of_memory(&e) => {
-                tracing::warn!("GPU ran out of memory ({e}); retrying on the CPU");
-                let info = self.inner.info().clone();
-                self.inner = load_on(&info, &self.model_path, Device::Cpu, &self.options)?;
-                self.inner.separate(mix, progress, cancel)
+        let on_gpu = self.inner.active_device() != Device::Cpu;
+        let why = match self.inner.separate(mix, progress, cancel) {
+            Err(e) if on_gpu && is_out_of_memory(&e) => format!("GPU ran out of memory ({e})"),
+            // DirectML has operator bugs on some shapes (e.g. InstanceNormalization in MDX23C
+            // on RDNA2) that yield NaN with no error; never hand silent garbage to the user.
+            Ok(stems) if on_gpu && !all_finite(&stems) => {
+                "GPU output contained NaN/Inf (DirectML operator bug)".to_owned()
             }
-            r => r,
-        }
+            r => return r,
+        };
+        tracing::warn!("{why}; retrying on the CPU");
+        let info = self.inner.info().clone();
+        self.inner = load_on(&info, &self.model_path, Device::Cpu, &self.options)?;
+        self.inner.separate(mix, progress, cancel)
     }
 
     fn active_device(&self) -> Device {
@@ -453,5 +466,19 @@ mod oom_tests {
         assert!(is_out_of_memory(&rt("std::bad_alloc")));
         assert!(!is_out_of_memory(&rt("invalid input shape")));
         assert!(!is_out_of_memory(&ModelError::Cancelled));
+    }
+
+    #[test]
+    fn non_finite_output_is_detected() {
+        let buf = |v: f32| AudioBuffer {
+            sample_rate: 44_100,
+            channels: vec![vec![0.1, v], vec![0.0, 0.0]],
+        };
+        assert!(all_finite(&[(StemKind::Drums, buf(0.5))]));
+        assert!(!all_finite(&[
+            (StemKind::Drums, buf(0.5)),
+            (StemKind::Bass, buf(f32::NAN))
+        ]));
+        assert!(!all_finite(&[(StemKind::Drums, buf(f32::INFINITY))]));
     }
 }

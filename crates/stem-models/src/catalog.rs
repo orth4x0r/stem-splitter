@@ -140,8 +140,8 @@ const PERSONAL_USE: &[Entry] = &[
         // aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt, sha256 d2a4aa53eb58...
         // (openmirlab/mdxnet-infer release weights-drumsep-v1; Politrees/UVR_resources).
         url: our_url!("drumsep_mdx23c.onnx"),
-        sha256: None,
-        size_bytes: DRUMSEP_ONNX_BYTES,
+        sha256: Some("9abbd89ee4e51ef9d72a55eb158cb68dcc11483f479c1cea320680e03bd0df8c"),
+        size_bytes: 437_710_544,
         license: "Personal use only: no stated licence. aufr33 & jarredou published the weights \
                   without terms and the original release (jarredou/models) is gone; mirrors \
                   disagree (Politrees/UVR_resources tags MIT, Intel's OpenVINO conversion CC \
@@ -163,8 +163,8 @@ const PERSONAL_USE: &[Entry] = &[
         // dereverb_mdx23c_sdr_6.9096.ckpt (= MDX23C-De-Reverb-aufr33-jarredou.ckpt), sha256
         // eae2471b7077... (UVR / audio-separator; noblebarkrr/mvsepless_resources).
         url: our_url!("mdx23c_dereverb.onnx"),
-        sha256: None,
-        size_bytes: DEREVERB_ONNX_BYTES,
+        sha256: Some("d7e80d0c2f3a3eaf6bd91c6153266079507573ff7b4295687bbe5e7bea639671"),
+        size_bytes: 448_157_208,
         license: "Personal use only: no stated licence (aufr33 & jarredou published the weights \
                   without terms; distributed through UVR and audio-separator). Code: MIT \
                   (ZFTurbo/Music-Source-Separation-Training)",
@@ -191,8 +191,8 @@ const PERSONAL_USE: &[Entry] = &[
         // From audio-separator 0.48.0's model-checksums.json; not downloaded by us (GitHub
         // releases were out of reach when this entry was written).
         sha256: Some("233bb5c6aaa365e568659a0a81211746fa881f8f47f82d9e864fce1f7692db80"),
-        // Estimate: UVR's other dim_f 3072 MDX-Net graphs are this size.
-        size_bytes: 66_759_214,
+        // Measured on the user's PC (2026-11-09); the hash matched.
+        size_bytes: 66_780_123,
         license: "Personal use only: no stated licence (FoxJoy's weights, distributed in the UVR \
                   public model repository without terms)",
         non_commercial: true,
@@ -210,8 +210,8 @@ const PERSONAL_USE: &[Entry] = &[
         // is the rest). Checkpoint denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt, sha256
         // 7c1c39191edc... (ZFTurbo MSST release v.1.0.7).
         url: our_url!("mel_roformer_denoise.onnx"),
-        sha256: None,
-        size_bytes: MEL_ROFORMER_ONNX_BYTES,
+        sha256: Some("bba83be6c89fb2cd9353c049f8d930340a348bbc2aac198f20a6edecd69ad670"),
+        size_bytes: 929_363_641,
         license: "Personal use only: no stated licence (aufr33's weights, published in ZFTurbo's \
                   MSST release v.1.0.7 without terms). Code: MIT (ZFTurbo/Music-Source-\
                   Separation-Training, lucidrains/BS-RoFormer)",
@@ -229,22 +229,14 @@ const PERSONAL_USE: &[Entry] = &[
         // Checkpoint dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt, sha256
         // 396432f5af25... (huggingface.co/Sucial/Dereverb-Echo_Mel_Band_Roformer).
         url: our_url!("mel_roformer_dereverb_echo.onnx"),
-        sha256: None,
-        size_bytes: MEL_ROFORMER_ONNX_BYTES,
+        sha256: Some("e2766c639a1e74f975dff06157d4d0ae33adc36e927b62cd013e72c5366a1ca2"),
+        size_bytes: 473_089_873,
         license: "CC BY-NC-SA 4.0 (weights: Sucial / SUC-DriverOld): non-commercial, \
                   attribution, share-alike. Code: MIT (ZFTurbo/Music-Source-Separation-Training, \
                   lucidrains/BS-RoFormer)",
         non_commercial: true,
     },
 ];
-
-/// fp32 export sizes of the unhosted personal-use models, shown before the file is there. The
-/// MDX23C figures are `export_mdx23c_onnx.py --random-weights` outputs (torch 2.15, opset 17);
-/// the Mel-RoFormer one is an estimate (twice audiojs' fp16 Kim export). The scripts print the
-/// exact size of each real export.
-const DRUMSEP_ONNX_BYTES: u64 = 437_415_924;
-const DEREVERB_ONNX_BYTES: u64 = 447_862_588;
-const MEL_ROFORMER_ONNX_BYTES: u64 = 920_000_000;
 
 const ENTRIES: &[Entry] = &[
     Entry {
