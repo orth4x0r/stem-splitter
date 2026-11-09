@@ -55,34 +55,35 @@ pub const BAD: Color32 = Color32::from_rgb(226, 108, 100);
 /// Channel colours: one hue per stem, toned down so they sit on graphite like the coloured
 /// scribble strips on a console. These are the screen's colour; the chrome stays grey.
 pub fn stem_color(kind: StemKind) -> Color32 {
-    let c = match kind {
-        StemKind::Vocals => Color32::from_rgb(240, 110, 150),
-        StemKind::Drums => Color32::from_rgb(240, 132, 76),
-        StemKind::Bass => Color32::from_rgb(132, 128, 250),
-        StemKind::Other => Color32::from_rgb(70, 196, 210),
-        StemKind::Instrumental => Color32::from_rgb(64, 196, 168),
-        StemKind::Guitar => Color32::from_rgb(120, 206, 110),
-        StemKind::Piano => Color32::from_rgb(232, 208, 100),
-        StemKind::Dialogue => Color32::from_rgb(244, 156, 84),
-        StemKind::Music => Color32::from_rgb(100, 156, 240),
-        StemKind::Effects => Color32::from_rgb(220, 120, 200),
-        StemKind::LeadVocals => Color32::from_rgb(244, 100, 120),
-        StemKind::BackingVocals => Color32::from_rgb(208, 128, 236),
+    // Values are pre-mixed 12% toward grey (150, 150, 150) so every channel sits at the same,
+    // calmer intensity. Kept as plain constants: a runtime mix here crashed LLVM's Windows
+    // codegen (rustc 1.97, x86_64-pc-windows-*, thin LTO).
+    match kind {
+        StemKind::Vocals => Color32::from_rgb(229, 115, 150),
+        StemKind::Drums => Color32::from_rgb(229, 134, 85),
+        StemKind::Bass => Color32::from_rgb(134, 131, 238),
+        StemKind::Other => Color32::from_rgb(80, 190, 203),
+        StemKind::Instrumental => Color32::from_rgb(74, 190, 166),
+        StemKind::Guitar => Color32::from_rgb(124, 199, 115),
+        StemKind::Piano => Color32::from_rgb(222, 201, 106),
+        StemKind::Dialogue => Color32::from_rgb(233, 155, 92),
+        StemKind::Music => Color32::from_rgb(106, 155, 229),
+        StemKind::Effects => Color32::from_rgb(212, 124, 194),
+        StemKind::LeadVocals => Color32::from_rgb(233, 106, 124),
+        StemKind::BackingVocals => Color32::from_rgb(201, 131, 226),
         // Drum parts: the skins warm like the drums stem they come from, the metals cool.
-        StemKind::Kick => Color32::from_rgb(236, 96, 70),
-        StemKind::Snare => Color32::from_rgb(240, 200, 96),
-        StemKind::Toms => Color32::from_rgb(240, 150, 120),
-        StemKind::HiHat => Color32::from_rgb(180, 220, 110),
-        StemKind::Ride => Color32::from_rgb(80, 176, 232),
-        StemKind::Crash => Color32::from_rgb(150, 216, 228),
+        StemKind::Kick => Color32::from_rgb(226, 102, 80),
+        StemKind::Snare => Color32::from_rgb(229, 194, 102),
+        StemKind::Toms => Color32::from_rgb(229, 150, 124),
+        StemKind::HiHat => Color32::from_rgb(176, 212, 115),
+        StemKind::Ride => Color32::from_rgb(88, 173, 222),
+        StemKind::Crash => Color32::from_rgb(150, 208, 219),
         // Clean-up: the kept part stays in the vocal family, what was taken out goes muted.
-        StemKind::Dry => Color32::from_rgb(240, 136, 180),
-        StemKind::Reverb => Color32::from_rgb(140, 146, 230),
-        StemKind::Clean => Color32::from_rgb(110, 210, 170),
-        StemKind::Noise => Color32::from_rgb(150, 154, 162),
-    };
-    // A little desaturation keeps every channel at the same, calmer intensity.
-    lerp_color(c, Color32::from_rgb(150, 150, 150), 0.12)
+        StemKind::Dry => Color32::from_rgb(229, 138, 176),
+        StemKind::Reverb => Color32::from_rgb(141, 146, 220),
+        StemKind::Clean => Color32::from_rgb(115, 203, 168),
+        StemKind::Noise => Color32::from_rgb(150, 154, 161),
+    }
 }
 
 /// Keyboard focus ring colour (high contrast against every surface and the accent gradient).
