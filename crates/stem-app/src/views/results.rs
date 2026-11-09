@@ -8,7 +8,7 @@ use eframe::egui::{
 
 use crate::app::StemApp;
 use crate::backend::{mmss, mmss_ms};
-use crate::theme;
+use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::drag_handle::{self, PillAction};
 use crate::widgets::icons::{self, Icon};
@@ -246,6 +246,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut strip: Option<(Rect, usize, Color32)> = None;
     // Sub-stems (drum parts, clean-up results) follow the stem they came from, indented.
     let order = s.display_order();
+    let mut tree_lines = Vec::new();
     for &i in &order {
         let audible = s.audible(i);
         let selected_lane = s.selection.is_some() && s.sel_track == i;
@@ -254,22 +255,45 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let last_child = parent.is_none_or(|p| s.children(p).last() == Some(&i));
         let n_children = s.children(i).len();
         let parent_color = parent.map(|p| theme::stem_color(s.tracks[p].kind));
+        let sibling = parent.map(|p| s.children(p).iter().position(|&c| c == i).unwrap_or(0));
         let tr = &mut s.tracks[i];
         let color = theme::stem_color(tr.kind);
         let indent = depth as f32 * SUB_INDENT;
         let (slot, card_resp) = ui.allocate_exact_size(vec2(full_w, LANE_H + 20.0), Sense::hover());
+        // Sub-stems cascade out of their parent: the tree line draws in, then the card
+        // slides down and fades up, one sibling after another.
+        let opacity = ui.opacity();
+        let (slot, line_draw) = match sibling {
+            Some(k) => {
+                let raw = motion::appear(
+                    ui.ctx(),
+                    Id::unique(("sub-in", i, tr.kind.label())),
+                    0.05 + k.min(8) as f32 * 0.07,
+                    motion::ENTER,
+                );
+                let e = motion::ease_out(((raw - 0.25) / 0.75).clamp(0.0, 1.0));
+                ui.set_opacity(opacity * e);
+                (
+                    slot.translate(vec2(0.0, -14.0 * (1.0 - e))),
+                    motion::ease_in_out((raw / 0.7).clamp(0.0, 1.0)),
+                )
+            }
+            None => (slot, 1.0),
+        };
         let card = Rect::from_min_max(pos2(slot.left() + indent, slot.top()), slot.max);
         if let Some(pc) = parent_color {
             // From the gap above (under the parent or the previous sibling) to this card.
-            super::refine::tree_line(
-                ui.painter(),
-                card.left() - SUB_INDENT + 13.0,
-                card.top() - 6.0,
+            // Painted after the cards (their shadows would cover it) and at full opacity:
+            // the line leads the card in.
+            tree_lines.push((
+                card.left() - SUB_INDENT + 12.0,
+                slot.top() - 6.0,
                 card.center().y,
                 card.left() - 1.0,
-                (!last_child).then_some(card.bottom() + 6.0),
+                (!last_child).then_some(slot.bottom() + 6.0),
                 pc,
-            );
+                line_draw,
+            ));
         }
         let hover =
             ui.ctx()
@@ -488,7 +512,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         if refining.is_some_and(|(t, _)| t == i) {
             strip = Some((lane_rect, i, color));
         }
+        ui.set_opacity(opacity);
         ui.add_space(6.0);
+    }
+    for (x, top, mid, to_x, more, c, draw) in tree_lines {
+        super::refine::tree_line(ui.painter(), x, top, mid, to_x, more, c, draw);
     }
     if let Some((lane, i, color)) = strip {
         super::refine::progress_strip(app, ui, lane, i, color);
@@ -851,8 +879,8 @@ pub fn transport(app: &mut StemApp, ui: &mut egui::Ui) {
                             (true, true) => "Drag",
                             (false, true) => "Show",
                         };
-                        let w = drag_handle::pill_width(ui, label) + 8.0;
-                        let (r, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
+                        let w = drag_handle::pill_width_tall(ui, label);
+                        let (r, _) = ui.allocate_exact_size(vec2(w, 42.0), Sense::hover());
                         let tip = if crate::dragout::NATIVE {
                             "Drag the selected sample into your DAW (saved to Samples first)"
                         } else {

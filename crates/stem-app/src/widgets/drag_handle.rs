@@ -37,6 +37,20 @@ pub fn pill_width(ui: &Ui, label: &str) -> f32 {
     g.size().x + 34.0
 }
 
+/// Label size for a pill of height `h`: small in-card pills, button-sized text when the pill
+/// sits in a row of buttons (so it matches their height and type).
+fn label_size(h: f32) -> f32 {
+    if h >= 32.0 { 13.5 } else { 11.5 }
+}
+
+/// Width a button-height pill (see [`drag_pill`]) with `label` needs.
+pub fn pill_width_tall(ui: &Ui, label: &str) -> f32 {
+    let g = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::semi(13.5), Color32::WHITE);
+    g.size().x + 44.0
+}
+
 /// A small pill with a grip and `label`, drawn in `rect` and tinted `color`.
 pub fn drag_pill(
     ui: &mut Ui,
@@ -56,7 +70,11 @@ pub fn drag_pill(
     let p = ui.painter();
     p.rect(
         rect,
-        CornerRadius::same((rect.height() / 2.0) as u8),
+        CornerRadius::same(if rect.height() >= 32.0 {
+            theme::R_CTRL
+        } else {
+            (rect.height() / 2.0) as u8
+        }),
         theme::lerp_color(theme::CARD_HI, theme::alpha(color, 0.22), h),
         Stroke::new(
             1.0,
@@ -65,12 +83,14 @@ pub fn drag_pill(
         StrokeKind::Inside,
     );
     let fg = theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, h);
-    grip(p, pos2(rect.left() + 13.0, rect.center().y), fg);
+    let size = label_size(rect.height());
+    let pad = if size > 12.0 { 17.0 } else { 13.0 };
+    grip(p, pos2(rect.left() + pad, rect.center().y), fg);
     p.text(
-        pos2(rect.left() + 23.0, rect.center().y),
+        pos2(rect.left() + pad + 10.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        theme::semi(11.5),
+        theme::semi(size),
         fg,
     );
     let action = if resp.drag_started() {

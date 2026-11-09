@@ -25,6 +25,8 @@
 //! drums-menu (the Split menu open), vocals-clean (Dry + Reverb under Vocals), drums-models
 //! (the personal-use model group with NC badges; tall size), drums-presets (the new built-in
 //! chains on the Models page).
+//! Polish 4: welcome (the first-run welcome sheet), shortcuts (the `?` overlay over the
+//! results), library-hover (pair with `STEM_SHOT_POINTER` on a library card).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,6 +81,19 @@ impl Shot {
     pub fn setup(&mut self, app: &mut StemApp, _ctx: &egui::Context) {
         if std::env::var_os("STEM_REDUCE_MOTION").is_some() {
             app.settings.reduce_motion = true;
+        }
+        // Only the welcome scene shows the first-run sheet.
+        app.settings.welcomed = self.scene != "welcome";
+        let scene_alias = match self.scene.as_str() {
+            "shortcuts" => {
+                _ctx.data_mut(|d| d.insert_temp(egui::Id::unique("shortcuts-open"), true));
+                Some("results")
+            }
+            "library-hover" => Some("library"),
+            _ => None,
+        };
+        if let Some(a) = scene_alias {
+            self.scene = a.to_owned();
         }
         let ago = |h: u64| now_unix().saturating_sub(h * 3600);
         app.settings.history = vec![
@@ -332,6 +347,9 @@ impl Shot {
                         "4 STEMS READY",
                     );
                 }
+            }
+            "welcome" => {
+                app.settings.history.clear();
             }
             "empty" => {
                 app.page = Page::Library;

@@ -161,9 +161,8 @@ pub fn panel(app: &mut StemApp, ui: &mut egui::Ui) {
                                     }
                                     if let Some(p) = &last_export {
                                         let label = if crate::dragout::NATIVE { "Drag" } else { "Show" };
-                                        let w = drag_handle::pill_width(ui, label);
-                                        let (r, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
-                                        let pill = drag_handle::pill_rect(r.right(), r.center().y, w);
+                                        let w = drag_handle::pill_width_tall(ui, label);
+                                        let (pill, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
                                         let tip = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
                                         if let (_, Some(a)) = drag_handle::drag_pill(ui, pill, Id::unique("tf-drag"), label, color, &tip) {
                                             drag = Some(a);

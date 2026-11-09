@@ -271,7 +271,7 @@ fn appearance(app: &mut StemApp, ui: &mut egui::Ui) {
             row(ui, "Keyboard", |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Tab moves focus · Ctrl+1–4 switch pages · Space plays / pauses",
+                        "Tab moves focus · Ctrl+1–4 switch pages · Space plays / pauses · ? lists every shortcut",
                     )
                     .font(theme::regular(12.5))
                     .color(theme::TEXT_DIM),

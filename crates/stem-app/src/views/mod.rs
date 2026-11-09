@@ -18,7 +18,9 @@ mod results;
 mod section;
 mod settings;
 mod settings_tools;
+pub mod shortcuts;
 mod transform;
+mod welcome;
 
 use eframe::egui::{self, Color32, Id, Margin, Rect, pos2, vec2};
 
@@ -113,6 +115,8 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
     presets::editor(app, ui.ctx());
     kit::show(app, ui.ctx());
     midi::show(app, ui.ctx());
+    welcome::show(app, ui.ctx());
+    shortcuts::show(app, ui.ctx());
 
     if app.drop_hover {
         chrome::drop_overlay(&ctx);
