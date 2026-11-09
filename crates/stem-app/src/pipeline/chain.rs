@@ -954,7 +954,9 @@ mod tests {
                 details.borrow_mut().push(d);
             }
         };
+        let t_first = std::time::Instant::now();
         let out = run(&req, &spec, &never, &send).unwrap();
+        let first_secs = t_first.elapsed().as_secs_f32();
         let kinds: Vec<_> = out.stems.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, vec![Vocals, Drums, Bass, Other]);
         for s in &out.stems {
@@ -975,8 +977,14 @@ mod tests {
             .filter(|d| d.contains("cached"))
             .count();
         assert_eq!(cached, 2, "{:?}", details.borrow());
-        // The fake model runs take ~4 s; cached ones skip them.
-        assert!(t0.elapsed().as_secs_f32() < 3.0);
+        // The fake model runs take ~4 s; cached ones skip them. Compare against the first run
+        // rather than a fixed limit: both runs also do the track analysis, which is slow in
+        // debug builds on CI runners.
+        let second_secs = t0.elapsed().as_secs_f32();
+        assert!(
+            second_secs < first_secs - 2.0,
+            "first {first_secs:.2} s, cached {second_secs:.2} s"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
         for o in [out.out_dir, again.out_dir] {
             let _ = std::fs::remove_dir_all(o);
