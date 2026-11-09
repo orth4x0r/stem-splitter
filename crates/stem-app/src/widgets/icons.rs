@@ -28,6 +28,7 @@ pub enum Icon {
     Refresh,
     Plus,
     Sparkle,
+    Search,
 }
 
 /// Paint `icon` inside `rect` (square-ish), using `color`.
@@ -196,6 +197,10 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             };
             star(7.0, 9.0, 6.0);
             star(13.0, 3.5, 2.6);
+        }
+        Icon::Search => {
+            p.circle(at(6.8, 6.8), 4.4 * u, Color32::TRANSPARENT, st);
+            line(&[(10.1, 10.1), (13.8, 13.8)]);
         }
     }
 }

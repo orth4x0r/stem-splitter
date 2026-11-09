@@ -169,10 +169,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let full_w = ui.available_width();
     let (ruler, _) = ui.allocate_exact_size(vec2(full_w, 22.0), Sense::hover());
     let lane_x = ruler.left() + CONTROLS_W + 18.0..=ruler.right() - 18.0;
+    let struct_h = structure_height(s.analysis.as_ref());
     // Ctrl+wheel zoom / wheel scroll over the lanes, before anything is drawn with the view.
     let lanes_area = Rect::from_min_size(
         pos2(ruler.left(), ruler.top()),
-        vec2(full_w, 26.0 + s.tracks.len() as f32 * (LANE_H + 26.0)),
+        vec2(
+            full_w,
+            26.0 + struct_h + s.tracks.len() as f32 * (LANE_H + 26.0),
+        ),
     );
     s.timeline
         .handle_input(ui, lanes_area, *lane_x.start(), *lane_x.end());
@@ -232,6 +236,18 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             theme::semi(10.5),
             theme::TEXT_FAINT,
         );
+    }
+    // ---- sections + chords
+    if struct_h > 0.0
+        && let Some(a) = &s.analysis
+    {
+        let (x0, x1) = (*lane_x.start(), *lane_x.end());
+        let to_x = |t: f64| x0 + view.frac_of(t) as f32 * (x1 - x0);
+        if let Some(c) = structure_lanes(ui, full_w, a, x0..=x1, s.selection, playhead, &to_x) {
+            let sel = c.apply(s.selection);
+            s.selection = Some(sel);
+            app.player.seek(sel.0);
+        }
     }
     let grid = s.analysis.as_ref().and_then(|a| a.grid.as_ref());
     ui.add_space(4.0);
@@ -571,6 +587,73 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     ui.add_space(8.0);
 
     header_actions(app, &out_dir, open_folder, export_all, new_split);
+}
+
+const SECTION_H: f32 = 22.0;
+const CHORD_H: f32 = 18.0;
+
+/// Height of the sections / chords block (0 when there's nothing to show).
+fn structure_height(a: Option<&crate::analysis::TrackAnalysis>) -> f32 {
+    let Some(a) = a else { return 0.0 };
+    let mut h = 0.0;
+    if a.sections.len() > 1 {
+        h += SECTION_H + 6.0;
+    }
+    if a.chords.iter().any(|c| c.chord.is_some()) {
+        h += CHORD_H + 4.0;
+    }
+    h
+}
+
+/// Section blocks and chord names over the lanes, labelled on the left like the ruler.
+/// Returns a clicked section.
+#[allow(clippy::too_many_arguments)]
+fn structure_lanes(
+    ui: &mut egui::Ui,
+    full_w: f32,
+    a: &crate::analysis::TrackAnalysis,
+    xs: std::ops::RangeInclusive<f32>,
+    selection: Option<(f64, f64)>,
+    playhead: f64,
+    to_x: &dyn Fn(f64) -> f32,
+) -> Option<crate::widgets::structure::SectionClick> {
+    use crate::widgets::structure;
+    let mut click = None;
+    let label = |ui: &egui::Ui, r: Rect, text: &str| {
+        ui.painter().text(
+            pos2(r.left(), r.center().y),
+            Align2::LEFT_CENTER,
+            text,
+            theme::semi(10.5),
+            theme::TEXT_FAINT,
+        );
+    };
+    if a.sections.len() > 1 {
+        ui.add_space(2.0);
+        let (row, _) = ui.allocate_exact_size(vec2(full_w, SECTION_H), Sense::hover());
+        label(ui, row, "Sections");
+        let lane = Rect::from_x_y_ranges(xs.clone(), row.y_range());
+        let chorus = stem_audio::sections::chorus_label(&a.sections);
+        click = structure::sections_lane(
+            ui,
+            Id::unique("results-sections"),
+            lane,
+            &a.sections,
+            chorus,
+            a.grid.as_ref(),
+            selection,
+            to_x,
+        );
+        ui.add_space(4.0);
+    }
+    if a.chords.iter().any(|c| c.chord.is_some()) {
+        let (row, _) = ui.allocate_exact_size(vec2(full_w, CHORD_H), Sense::hover());
+        label(ui, row, "Chords");
+        let lane = Rect::from_x_y_ranges(xs, row.y_range());
+        structure::chords_lane(ui.painter(), lane, &a.chords, playhead, to_x);
+        ui.add_space(4.0);
+    }
+    click
 }
 
 fn header_actions(

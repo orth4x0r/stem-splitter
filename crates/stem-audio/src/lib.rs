@@ -3,11 +3,14 @@
 //! Everything works on [`AudioBuffer`]: planar `f32` samples in `[-1, 1]`.
 
 pub mod analysis;
+mod beatsync;
 pub mod chop;
+pub mod chords;
 mod encode;
 pub mod ensemble;
 pub mod oneshot;
 pub mod onsets;
+pub mod sections;
 pub mod stft;
 pub mod stretch;
 pub mod wavmeta;

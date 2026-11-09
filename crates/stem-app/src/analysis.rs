@@ -1,21 +1,70 @@
-//! Tempo / key / beat-grid glue for the app: which stems to analyse, halve / double, snapping,
-//! zero-crossing refinement, bar-loop trimming and sample file names.
+//! Tempo / key / beat-grid glue for the app: which stems to analyse, halve / double, grid
+//! nudging, snapping, zero-crossing refinement, bar-loop trimming and sample file names.
 
 use serde::{Deserialize, Serialize};
 use stem_audio::AudioBuffer;
 use stem_audio::analysis::{self, BeatGrid, GridDivision, Key, Tempo};
+use stem_audio::chords::ChordSpan;
+use stem_audio::sections::Section;
 use stem_models::StemKind;
 
 use crate::paths::sanitize_file_name;
 
-/// Analysis results for one session. `grid` and `tempo` follow the user's halve / double.
-#[derive(Debug, Clone, PartialEq)]
+/// Analysis results for one session. `grid` and `tempo` follow the user's halve / double and
+/// grid nudges; `sections` follow the grid's bar lines.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrackAnalysis {
     pub tempo: Option<Tempo>,
     pub key: Option<Key>,
     pub grid: Option<BeatGrid>,
     /// Tempo as detected, before halve / double.
     pub detected_bpm: Option<f32>,
+    /// Song sections (A, B, A, C ...) on the grid's bar lines.
+    pub sections: Vec<Section>,
+    /// Chords over the whole track (from the harmonic stems).
+    pub chords: Vec<ChordSpan>,
+    /// The user's grid nudge (saved in the history entry).
+    pub nudge: GridNudge,
+    /// The grid and sections as detected, for "reset" and re-snapping.
+    pub detected_grid: Option<BeatGrid>,
+    pub detected_sections: Vec<Section>,
+    /// Track length, for re-snapping sections.
+    pub duration: f64,
+}
+
+/// How the user moved the beat grid: a time shift and, optionally, which beat is bar 1.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct GridNudge {
+    /// Seconds the whole grid moved (positive = later).
+    #[serde(default)]
+    pub offset: f64,
+    /// Time of a beat that starts a bar (in the shifted grid), when the user picked one.
+    #[serde(default)]
+    pub downbeat_at: Option<f64>,
+}
+
+impl GridNudge {
+    pub fn is_zero(&self) -> bool {
+        self.offset.abs() < 1e-6 && self.downbeat_at.is_none()
+    }
+}
+
+/// Nearest beat index to `t`.
+fn nearest_beat(g: &BeatGrid, t: f64) -> i64 {
+    let i = g.beat_index_at(t);
+    if (g.beat_time(i + 1) - t).abs() < (t - g.beat_time(i)).abs() {
+        i + 1
+    } else {
+        i
+    }
+}
+
+/// Make beat `i` (any index, extrapolated ones included) a downbeat, keeping `downbeat`
+/// inside `beats`.
+fn set_downbeat(g: &mut BeatGrid, i: i64) {
+    let bpb = g.beats_per_bar.max(1) as i64;
+    let n = g.beats.len() as i64;
+    g.downbeat = i.rem_euclid(bpb).clamp(0, (n - 1).max(0)) as usize;
 }
 
 impl TrackAnalysis {
@@ -34,7 +83,109 @@ impl TrackAnalysis {
         }
         *g = g.scaled(factor);
         t.bpm = g.bpm;
+        self.resnap();
         true
+    }
+
+    /// Re-apply the saved tempo choice and grid nudge (from history) to a fresh analysis.
+    pub fn restore(&mut self, saved_bpm: Option<f32>, nudge: Option<GridNudge>) {
+        let nudge = nudge.unwrap_or_default();
+        if let Some(g) = &mut self.grid {
+            g.beats.iter_mut().for_each(|b| *b += nudge.offset);
+            // Bar 1 first on the full grid, so halving keeps the right beats.
+            if let Some(at) = nudge.downbeat_at {
+                let i = nearest_beat(g, at);
+                if (g.beat_time(i) - at).abs() < 0.25 * g.period() {
+                    set_downbeat(g, i);
+                }
+            }
+        }
+        if let Some(b) = saved_bpm {
+            self.apply_saved_bpm(b);
+        }
+        if let (Some(g), Some(at)) = (&mut self.grid, nudge.downbeat_at) {
+            let i = nearest_beat(g, at);
+            set_downbeat(g, i);
+        }
+        self.nudge = nudge;
+        self.resnap();
+    }
+
+    /// Shift the whole grid by `dt` seconds (positive = later).
+    pub fn nudge_by(&mut self, dt: f64) -> bool {
+        let Some(g) = &mut self.grid else {
+            return false;
+        };
+        g.beats.iter_mut().for_each(|b| *b += dt);
+        self.nudge.offset += dt;
+        if let Some(at) = &mut self.nudge.downbeat_at {
+            *at += dt;
+        }
+        self.resnap();
+        true
+    }
+
+    /// Move the bar lines by `beats` beats (positive = later), beats stay where they are.
+    pub fn shift_bar(&mut self, beats: i64) -> bool {
+        let Some(g) = &mut self.grid else {
+            return false;
+        };
+        let i = g.downbeat as i64 + beats;
+        set_downbeat(g, i);
+        self.nudge.downbeat_at = Some(g.beat_time(g.downbeat as i64));
+        self.resnap();
+        true
+    }
+
+    /// Make the beat nearest `t` the start of a bar ("set bar 1 here").
+    pub fn set_bar_one(&mut self, t: f64) -> bool {
+        let Some(g) = &mut self.grid else {
+            return false;
+        };
+        let i = nearest_beat(g, t);
+        set_downbeat(g, i);
+        self.nudge.downbeat_at = Some(g.beat_time(i));
+        self.resnap();
+        true
+    }
+
+    /// Undo the nudge (keeps halve / double).
+    pub fn reset_nudge(&mut self) {
+        let bpm = self.bpm();
+        if let Some(d) = &self.detected_grid {
+            self.grid = Some(d.clone());
+            if let (Some(t), Some(dbpm)) = (&mut self.tempo, self.detected_bpm) {
+                t.bpm = dbpm;
+            }
+        }
+        self.nudge = GridNudge::default();
+        if let Some(b) = bpm {
+            self.apply_saved_bpm(b);
+        }
+        self.resnap();
+    }
+
+    /// Sections back on the current grid's bar lines.
+    fn resnap(&mut self) {
+        if let Some(g) = &self.grid
+            && !self.detected_sections.is_empty()
+        {
+            self.sections = stem_audio::sections::resnap(&self.detected_sections, g, self.duration);
+        }
+    }
+
+    /// The section containing `t`.
+    pub fn section_at(&self, t: f64) -> Option<&Section> {
+        self.sections.iter().find(|s| t >= s.start && t < s.end)
+    }
+
+    /// Chord names sounding in `[a, b)`, e.g. "Am · F" (empty when unknown).
+    pub fn chords_label(&self, a: f64, b: f64) -> String {
+        stem_audio::chords::chords_in(&self.chords, a, b)
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     /// Re-apply a tempo the user picked earlier (from history), if it's a halving / doubling.
@@ -84,7 +235,13 @@ pub fn analyze_stems(stems: &[(StemKind, &AudioBuffer)]) -> Option<TrackAnalysis
         detected_bpm: a.tempo.map(|t| t.bpm),
         tempo: a.tempo,
         key: a.key,
+        detected_grid: a.grid.clone(),
         grid: a.grid,
+        sections: a.sections.clone(),
+        detected_sections: a.sections,
+        chords: a.chords,
+        nudge: GridNudge::default(),
+        duration: all.duration_secs(),
     })
 }
 
@@ -368,6 +525,7 @@ mod tests {
                 ..grid()
             }),
             detected_bpm: Some(140.0),
+            ..Default::default()
         };
         assert!(a.rescale(0.5));
         assert_eq!(a.bpm(), Some(70.0));
@@ -378,5 +536,102 @@ mod tests {
         assert_eq!(b.bpm(), Some(70.0));
         assert_eq!(bpm_label(93.5), "93.5");
         assert_eq!(bpm_label(90.02), "90");
+    }
+
+    fn with_sections() -> TrackAnalysis {
+        let g = grid();
+        let sec = |start: f64, end: f64, label: u8| Section {
+            start,
+            end,
+            label,
+            energy: 1.0,
+        };
+        let sections = vec![sec(0.0, 8.25, 0), sec(8.25, 16.25, 1), sec(16.25, 32.0, 0)];
+        TrackAnalysis {
+            tempo: Some(Tempo {
+                bpm: 120.0,
+                confidence: 1.0,
+            }),
+            grid: Some(g.clone()),
+            detected_grid: Some(g),
+            detected_bpm: Some(120.0),
+            sections: sections.clone(),
+            detected_sections: sections,
+            duration: 32.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nudge_moves_grid_and_sections() {
+        let mut a = with_sections();
+        assert!(a.nudge_by(0.005));
+        assert!(a.nudge_by(0.005));
+        let g = a.grid.as_ref().unwrap();
+        assert!((g.beats[0] - 0.26).abs() < 1e-9);
+        assert!((a.nudge.offset - 0.01).abs() < 1e-9);
+        // Sections follow the bar lines.
+        assert!(
+            (a.sections[1].start - 8.26).abs() < 1e-9,
+            "{:?}",
+            a.sections
+        );
+        // One beat later: bar lines (and sections) move by half a second.
+        assert!(a.shift_bar(1));
+        assert_eq!(a.grid.as_ref().unwrap().downbeat, 1);
+        assert!(
+            (a.sections[1].start - 8.76).abs() < 1e-9,
+            "{:?}",
+            a.sections
+        );
+        // Bar 1 at the beat nearest 3.0 s (beat 5 at 2.76 s): downbeat phase 1.
+        assert!(a.set_bar_one(3.0));
+        let g = a.grid.as_ref().unwrap();
+        assert!(g.is_downbeat(5));
+        assert_eq!(a.nudge.downbeat_at, Some(g.beat_time(5)));
+        a.reset_nudge();
+        assert_eq!(a.grid, a.detected_grid);
+        assert_eq!(a.sections, a.detected_sections);
+        assert!(a.nudge.is_zero());
+    }
+
+    #[test]
+    fn restore_reapplies_nudge_and_tempo() {
+        let mut a = with_sections();
+        a.nudge_by(-0.02);
+        a.set_bar_one(1.25 - 0.02); // beat 2
+        a.rescale(0.5);
+        let want = a.clone();
+        let mut b = with_sections();
+        b.restore(want.bpm(), Some(want.nudge));
+        assert_eq!(b.bpm(), Some(60.0));
+        assert_eq!(b.grid, want.grid);
+        assert_eq!(b.sections, want.sections);
+        // An old history entry without a nudge.
+        let mut c = with_sections();
+        c.restore(Some(120.0), None);
+        assert_eq!(c.grid, c.detected_grid);
+        // Chord labels for a range.
+        use stem_audio::chords::{Chord, Quality};
+        c.chords = vec![
+            ChordSpan {
+                start: 0.0,
+                end: 2.0,
+                chord: Some(Chord {
+                    root: 9,
+                    quality: Quality::Minor,
+                }),
+            },
+            ChordSpan {
+                start: 2.0,
+                end: 4.0,
+                chord: Some(Chord {
+                    root: 5,
+                    quality: Quality::Major,
+                }),
+            },
+        ];
+        assert_eq!(c.chords_label(1.0, 3.0), "Am · F");
+        assert_eq!(c.section_at(9.0).map(|s| s.label), Some(1));
     }
 }

@@ -39,6 +39,8 @@ pub struct PadInfo<'a> {
     pub linked: bool,
     /// Entrance progress 0..1 (pads pop in staggered when the chop changes).
     pub enter: f32,
+    /// Hover text (section and chords under the slice), if any.
+    pub tip: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,6 +65,10 @@ pub fn pad(ui: &mut Ui, rect: Rect, id: Id, info: &PadInfo, now: f64) -> Option<
         resp
     } else {
         resp.on_hover_cursor(CursorIcon::PointingHand)
+    };
+    let resp = match &info.tip {
+        Some(t) if !empty => resp.on_hover_text(t),
+        _ => resp,
     };
     let mut event = None;
     let pressed_id = id.with("down");

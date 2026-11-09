@@ -174,14 +174,19 @@ fn split(args: &[String]) -> Result<()> {
     let stems = sep
         .separate(
             &mix,
-            &mut |p| {
-                if let Progress::Separating(f) = p {
+            &mut |p| match p {
+                Progress::Separating(f) => {
                     let pct = (f * 100.0) as i32;
                     if pct / 10 != last_pct / 10 {
                         eprintln!("separating {pct}%");
                         last_pct = pct;
                     }
                 }
+                Progress::RetryingOnCpu(why) => {
+                    eprintln!("{why}; retrying on the CPU");
+                    last_pct = -1;
+                }
+                _ => {}
             },
             &cancel,
         )

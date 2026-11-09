@@ -1,0 +1,87 @@
+{
+  "id": "amen break",
+  "title": "amen break",
+  "_type": "playlist",
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "GxZuq57_bYM",
+      "url": "https://www.youtube.com/watch?v=GxZuq57_bYM",
+      "title": "The Winstons - Amen, Brother (Original Amen Break)",
+      "description": null,
+      "duration": 158.0,
+      "channel_id": "UCq3bUJhHt0J6xK5n7aYQGcw",
+      "channel": "Break Archive",
+      "channel_url": "https://www.youtube.com/channel/UCq3bUJhHt0J6xK5n7aYQGcw",
+      "uploader": "Break Archive",
+      "uploader_id": "@breakarchive",
+      "uploader_url": "https://www.youtube.com/@breakarchive",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/GxZuq57_bYM/hq720.jpg",
+          "height": 202,
+          "width": 360
+        }
+      ],
+      "timestamp": null,
+      "release_timestamp": null,
+      "availability": null,
+      "view_count": 4812337,
+      "live_status": null,
+      "channel_is_verified": null,
+      "__x_forwarded_for_ip": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "5kXNbZ7yqv0",
+      "url": "https://www.youtube.com/watch?v=5kXNbZ7yqv0",
+      "title": "Amen Break - 136 BPM drum loop (free sample)",
+      "duration": 33,
+      "channel": null,
+      "uploader": "drumtrax",
+      "view_count": 120455,
+      "live_status": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "jfKfPfyJRdk",
+      "url": "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      "title": "jungle radio - amen breaks 24/7",
+      "duration": null,
+      "channel": "Jungle Radio",
+      "view_count": 811,
+      "live_status": "is_live"
+    },
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "id": "UCxyz",
+      "url": "https://www.youtube.com/channel/UCxyz",
+      "title": "Amen Break Fan Club"
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "qwQLk7NcpO4",
+      "url": "qwQLk7NcpO4",
+      "title": "How the amen break changed music",
+      "channel": "Sample History"
+    }
+  ],
+  "extractor_key": "YoutubeSearch",
+  "extractor": "youtube:search",
+  "webpage_url": "amen break",
+  "original_url": "ytsearch5:amen break",
+  "webpage_url_basename": "amen break",
+  "webpage_url_domain": null,
+  "playlist_count": 5,
+  "epoch": 1762646400,
+  "_version": {
+    "version": "2025.10.22",
+    "release_git_head": null,
+    "repository": "yt-dlp/yt-dlp"
+  }
+}
