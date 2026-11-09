@@ -30,6 +30,7 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
     };
     let kinds: Vec<_> = session.tracks.iter().map(|t| t.kind).collect();
     let title = session.title.clone();
+    let names = session.names();
     let mut close = false;
     let mut go = false;
     let mut browse = false;
@@ -95,8 +96,8 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                     .desired_width(240.0),
             );
             ui.label(
-                egui::RichText::new("{track} {stem} {n}")
-                    .font(theme::mono(11.0))
+                egui::RichText::new("tokens in Settings")
+                    .font(theme::regular(11.5))
                     .color(theme::TEXT_FAINT),
             );
         });
@@ -146,7 +147,7 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                     let path = export::item_path(
                         std::path::Path::new(""),
                         &app.settings.export_template,
-                        &title,
+                        &names,
                         item,
                         n,
                         fmt,

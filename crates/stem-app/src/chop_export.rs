@@ -131,7 +131,12 @@ pub fn write_one(job: &ChopExport, i: usize) -> Result<PathBuf, String> {
         chop_name(&job.track, &job.stem, i),
         format.extension()
     ));
-    stem_audio::write_audio(&path, buf, format).map_err(|e| e.to_string())?;
+    // Slices are hits for a sampler: flag them as one-shots so DAWs don't time-stretch them.
+    let meta = stem_audio::wavmeta::WavMeta {
+        one_shot: true,
+        ..Default::default()
+    };
+    stem_audio::wavmeta::write_audio_meta(&path, buf, format, &meta).map_err(|e| e.to_string())?;
     Ok(path)
 }
 

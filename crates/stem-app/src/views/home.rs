@@ -8,7 +8,7 @@ use eframe::egui::{
 use crate::app::{Page, StemApp};
 use crate::pipeline::InputSource;
 use crate::theme::{self, motion};
-use crate::widgets::buttons::{Button, Kind};
+use crate::widgets::buttons::{self, Button, Kind};
 use crate::widgets::icons::{self, Icon};
 use crate::widgets::{overline, paint};
 
@@ -30,10 +30,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         url_bar(app, ui, now);
         ui.add_space(10.0);
         platforms(ui);
+        ui.add_space(10.0);
+        section_toggle(app, ui);
         ui.add_space(if compact { 16.0 } else { 22.0 });
         super::queue::panel(app, ui);
         drop_zone(app, ui, now, if compact { 186.0 } else { 220.0 });
         ui.add_space(if compact { 20.0 } else { 28.0 });
+        super::presets::strip(app, ui);
+        ui.add_space(if compact { 8.0 } else { 14.0 });
         model_strip(app, ui);
         ui.add_space(if compact { 20.0 } else { 28.0 });
         recent(app, ui, now);
@@ -203,6 +207,57 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
     if go || enter {
         app.start_from_input(now);
     }
+}
+
+/// "Pick a section first": after the download, show the waveform to trim before splitting.
+fn section_toggle(app: &mut StemApp, ui: &mut egui::Ui) {
+    let on = app.settings.pick_section;
+    let label = "Pick a section before splitting";
+    let hint = if on {
+        "  ·  trim to the part you need, it splits faster"
+    } else {
+        ""
+    };
+    let g = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::semi(13.0), theme::TEXT);
+    let gh = ui
+        .painter()
+        .layout_no_wrap(hint.to_owned(), theme::regular(12.5), theme::TEXT_FAINT);
+    let total = 26.0 + 44.0 + 10.0 + g.size().x + gh.size().x;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+        let (ir, _) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::hover());
+        let lit = ui
+            .ctx()
+            .animate_bool_with_time(Id::unique("pick-section-lit"), on, motion::BASE);
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(ir.center() - vec2(4.0, 0.0), vec2(15.0, 15.0)),
+            Icon::Scissors,
+            theme::lerp_color(theme::TEXT_FAINT, theme::CYAN, lit),
+        );
+        let mut v = on;
+        buttons::toggle_labeled(ui, &mut v, label).on_hover_text(
+            "After the download, pick the part of the track to split (snaps to bars)",
+        );
+        app.settings.pick_section = v;
+        ui.add_space(10.0);
+        let (lr, resp) = ui.allocate_exact_size(g.size() + vec2(0.0, 6.0), Sense::click());
+        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            app.settings.pick_section = !v;
+        }
+        ui.painter().galley(
+            pos2(lr.left(), lr.center().y - g.size().y / 2.0),
+            g,
+            theme::lerp_color(theme::TEXT_DIM, theme::TEXT, lit),
+        );
+        if !hint.is_empty() {
+            let (hr, _) = ui.allocate_exact_size(gh.size(), Sense::hover());
+            ui.painter().galley(hr.min, gh, theme::TEXT_FAINT);
+        }
+    });
 }
 
 fn platforms(ui: &mut egui::Ui) {
@@ -444,10 +499,12 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("No models registered yet.").color(theme::TEXT_DIM));
         return;
     }
+    // A preset in use takes over from the single model.
     let selected = app
         .backend
         .model(app.settings.model_id.as_deref())
-        .map(|m| m.id);
+        .map(|m| m.id)
+        .filter(|_| app.settings.active_preset().is_none());
     let n = models.len() as f32;
     let gap = 12.0;
     let cw = (ui.available_width() - gap * (n - 1.0)) / n;
@@ -460,7 +517,7 @@ fn model_strip(app: &mut StemApp, ui: &mut egui::Ui) {
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_text(m.description);
             if resp.clicked() {
-                app.settings.model_id = Some(m.id.to_owned());
+                app.pick_model(m.id);
             }
             let sel = selected == Some(m.id);
             let enter = motion::ease_out_back(motion::appear(

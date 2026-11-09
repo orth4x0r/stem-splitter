@@ -17,7 +17,7 @@ use crate::pipeline::{
 };
 use crate::player::Player;
 use crate::queue::{ItemStatus, Queue};
-use crate::settings::{HistoryEntry, Settings, now_unix};
+use crate::settings::{HistoryEntry, Preset, Settings, now_unix};
 use crate::shot::Shot;
 use crate::waveform::Envelope;
 use crate::widgets::drag_handle::PillAction;
@@ -47,11 +47,19 @@ pub struct RunningJob {
     pub shown: f32,
     /// From history: only decoding, no separation.
     pub reopening: bool,
+    /// The pre-split step: fetch + decode only, then the section picker opens.
+    pub preparing: bool,
 }
 
 impl RunningJob {
     pub fn overall(&self) -> f32 {
-        self.stage.overall(self.frac.unwrap_or(0.0))
+        let o = self.stage.overall(self.frac.unwrap_or(0.0));
+        if self.preparing {
+            // Fetch + decode fill the whole bar.
+            (o / Stage::PreparingModel.overall(0.0)).min(1.0)
+        } else {
+            o
+        }
     }
 }
 
@@ -81,6 +89,25 @@ pub struct Session {
     pub timeline: crate::timeline::Timeline,
     /// Chop mode (slices, pads), saved per session.
     pub chop: crate::chop::ChopState,
+    /// Source, input file and section the stems came from.
+    pub origin: crate::section::Origin,
+}
+
+impl Session {
+    /// Values for the export naming template.
+    pub fn names(&self) -> crate::export::NameCtx {
+        crate::export::NameCtx::new(
+            &self.title,
+            self.analysis.as_ref(),
+            self.origin.range,
+            &self.origin.model_name,
+        )
+    }
+
+    /// The title as used in file names: " (1m02-1m34)" added for a section split.
+    pub fn file_title(&self) -> String {
+        crate::section::dir_name(&self.title, self.origin.range)
+    }
 }
 
 impl Session {
@@ -162,6 +189,10 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// Size of the stem cache in bytes; `None` = not measured yet.
+    pub stem_cache_size: Option<u64>,
+    /// The open preset editor.
+    pub preset_editor: Option<crate::views::presets::PresetEditor>,
     /// The open "→ MIDI" sheet.
     pub midi: Option<crate::midi::MidiSheet>,
     pub midi_prefs: crate::midi::MidiPrefs,
@@ -171,6 +202,10 @@ pub struct StemApp {
     pub fx: crate::effects::Fx,
     pub splash: crate::splash::Splash,
     perf: Option<Perf>,
+    /// The open "pick a section" step (after fetch + decode, before separating).
+    pub section: Option<crate::section::SectionPick>,
+    /// Where the picker should start once the pre-split step finishes.
+    pending_preset: Option<crate::section::SplitRange>,
 }
 
 /// Frame-time statistics, printed when `STEM_PERF` is set.
@@ -235,12 +270,16 @@ impl StemApp {
             dragged_out: (Vec::new(), 0.0),
             ffmpeg: FfmpegState::default(),
             downloads_size: None,
+            stem_cache_size: None,
+            preset_editor: None,
             dsp: crate::fx::Fx::new(cc.egui_ctx.clone()),
             fx: crate::effects::Fx::default(),
             splash: crate::splash::Splash::new(false),
             perf: std::env::var_os("STEM_PERF").map(|_| Perf::default()),
             midi: None,
             midi_prefs: Default::default(),
+            section: None,
+            pending_preset: None,
         };
         theme::motion::set_reduced(app.settings.reduce_motion);
         let intro = app.settings.intro && shot.as_ref().is_none_or(|s| s.scene == "splash");
@@ -263,51 +302,110 @@ impl StemApp {
 
     /// Split `source` now, or queue it behind the running job.
     pub fn start_job(&mut self, source: InputSource, now: f64) {
-        if self.job.is_some() || self.queue.has_work() {
+        if self.job.is_some() || self.section.is_some() || self.queue.has_work() {
             self.enqueue(vec![source]);
             return;
         }
-        self.launch(source, now, None);
+        if self.settings.pick_section {
+            self.prepare(source, None, None, now);
+        } else {
+            self.launch(source, now, None);
+        }
     }
 
     /// Start the split pipeline for `source`; `queue_item` links it to a queue entry.
     fn launch(&mut self, source: InputSource, now: f64, queue_item: Option<u64>) {
-        let Some(model) = self
-            .backend
-            .model(self.settings.model_id.as_deref())
-            .cloned()
-        else {
+        self.launch_with(source.clone(), source, None, None, now, queue_item);
+    }
+
+    /// Start the pipeline on `input` (a link, or a file already fetched) while showing
+    /// `source`; `title` overrides the guessed title, `range` splits only that section.
+    fn launch_with(
+        &mut self,
+        source: InputSource,
+        input: InputSource,
+        title: Option<String>,
+        range: Option<crate::section::SplitRange>,
+        now: f64,
+        queue_item: Option<u64>,
+    ) {
+        let Some((id, cancel, req)) = self.new_job(source, input, title, now, false) else {
+            return;
+        };
+        if let Some(item) = queue_item.and_then(|q| self.queue.get_mut(q)) {
+            item.status = ItemStatus::Running { job_id: id };
+        }
+        pipeline::spawn_job(JobRequest { range, ..req }, cancel, self.notifier.clone());
+    }
+
+    /// Set up a [`RunningJob`] and the request for it (`None` without any model).
+    fn new_job(
+        &mut self,
+        source: InputSource,
+        input: InputSource,
+        title: Option<String>,
+        now: f64,
+        preparing: bool,
+    ) -> Option<(u64, Arc<AtomicBool>, JobRequest)> {
+        let chain = match self.settings.active_preset() {
+            Some(preset) => match self.chain_spec(&preset) {
+                Ok(spec) => Some(spec),
+                Err(e) => {
+                    self.toasts.error(format!("Can't run “{}”", preset.name), e);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let model = match &chain {
+            Some(spec) => spec.models.first().cloned(),
+            None => self
+                .backend
+                .model(self.settings.model_id.as_deref())
+                .cloned(),
+        };
+        let Some(model) = model else {
             self.toasts
                 .error("No models available", "The model registry is empty.");
-            return;
+            return None;
         };
         self.player.unload();
         self.session = None;
+        self.section = None;
         self.failure = None;
         let id = self.next_job_id;
         self.next_job_id += 1;
         let cancel = Arc::new(AtomicBool::new(false));
+        let (model_name, stems) = match &chain {
+            Some(spec) => (
+                spec.name.clone(),
+                spec.plan().map(|p| p.kinds()).unwrap_or_default(),
+            ),
+            None => (model.name.to_owned(), model.stems.clone()),
+        };
         self.job = Some(RunningJob {
             id,
-            title: source.provisional_title(),
-            source: source.clone(),
-            model_name: model.name.to_owned(),
-            stems: model.stems.clone(),
-            stage: Stage::Fetching,
+            title: title.clone().unwrap_or_else(|| source.provisional_title()),
+            source,
+            model_name,
+            stems,
+            stage: if preparing || matches!(input, InputSource::Url(_)) {
+                Stage::Fetching
+            } else {
+                Stage::Decoding
+            },
             detail: "Starting".into(),
             frac: None,
             started: now,
             cancel: cancel.clone(),
             shown: 0.0,
             reopening: false,
+            preparing,
         });
         self.page = Page::Split;
-        if let Some(item) = queue_item.and_then(|q| self.queue.get_mut(q)) {
-            item.status = ItemStatus::Running { job_id: id };
-        }
         let req = JobRequest {
             id,
-            source,
+            source: input,
             model,
             device: self.settings.device,
             output_root: self.settings.output_dir.clone(),
@@ -315,8 +413,130 @@ impl StemApp {
             cookies_from_browser: self.settings.cookies_from_browser.clone(),
             paths: self.backend.paths.clone(),
             demo: self.demo(),
+            range: None,
+            title,
+            chain,
         };
-        pipeline::spawn_job(req, cancel, self.notifier.clone());
+        Some((id, cancel, req))
+    }
+
+    /// The pre-split step: fetch and decode `source`, then open the section picker on it
+    /// (starting on `preset` when given).
+    pub fn prepare(
+        &mut self,
+        source: InputSource,
+        input: Option<(PathBuf, String)>,
+        preset: Option<crate::section::SplitRange>,
+        now: f64,
+    ) {
+        let (file, title) = match input {
+            Some((p, t)) => (InputSource::File(p), Some(t)),
+            None => (source.clone(), None),
+        };
+        if let Some((_, cancel, req)) = self.new_job(source, file, title, now, true) {
+            self.pending_preset = preset;
+            crate::section::spawn_prepare(req, cancel, self.notifier.clone());
+        }
+    }
+
+    /// Split what the picker has selected (the whole track when it covers all of it).
+    pub fn split_section(&mut self, now: f64) {
+        let Some(pick) = self.section.take() else {
+            return;
+        };
+        let range = pick.range();
+        let p = pick.prep;
+        self.launch_with(
+            p.source,
+            InputSource::File(p.input),
+            Some(p.title),
+            range,
+            now,
+            None,
+        );
+    }
+
+    /// Leave the picker without splitting.
+    pub fn close_section(&mut self) {
+        self.section = None;
+        self.player.unload();
+    }
+
+    /// Results page: split the selected part of the original input again.
+    pub fn resplit_selection(&mut self, now: f64) {
+        let Some(s) = &self.session else { return };
+        let Some(sel) = s.selection else {
+            self.toasts.info(
+                "Select a region first",
+                "Drag across a waveform to pick the part to split again.",
+            );
+            return;
+        };
+        let demo = self.demo();
+        let Some(input) = s.origin.input.clone().filter(|p| p.is_file() || demo) else {
+            self.toasts.error(
+                "The original audio is gone",
+                "Re-split needs the downloaded or source file; split the link again instead.",
+            );
+            return;
+        };
+        let range = s.origin.absolute(sel);
+        let source = if s.origin.source.is_empty() {
+            InputSource::File(input.clone())
+        } else if s.origin.source.contains("://") {
+            InputSource::Url(s.origin.source.clone())
+        } else {
+            InputSource::File(PathBuf::from(&s.origin.source))
+        };
+        let title = s.title.clone();
+        self.launch_with(
+            source,
+            InputSource::File(input),
+            Some(title),
+            Some(range),
+            now,
+            None,
+        );
+    }
+
+    /// Resolve a preset's models; fails if one is unknown or not available yet.
+    pub fn chain_spec(&self, preset: &Preset) -> Result<pipeline::chain::ChainSpec, String> {
+        let mut models = Vec::new();
+        for id in preset.chain.model_ids() {
+            let m = self
+                .backend
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .ok_or_else(|| format!("model “{id}” isn't in this version"))?;
+            if !self.backend.is_available(m) {
+                return Err(format!(
+                    "{} isn't hosted yet; export it into the models folder first",
+                    m.name
+                ));
+            }
+            models.push(m.clone());
+        }
+        let spec = pipeline::chain::ChainSpec {
+            name: preset.name.clone(),
+            chain: preset.chain.clone(),
+            models,
+            use_cache: self.settings.stem_cache,
+            cache_limit: self.settings.stem_cache_limit(),
+        };
+        spec.plan()?;
+        Ok(spec)
+    }
+
+    /// Use a preset for the next splits (`None` = back to the single model).
+    pub fn pick_preset(&mut self, id: Option<String>) {
+        self.settings.preset_id = id;
+    }
+
+    /// Use a single model for the next splits.
+    pub fn pick_model(&mut self, id: &str) {
+        self.settings.model_id = Some(id.to_owned());
+        self.settings.preset_id = None;
     }
 
     pub fn start_from_input(&mut self, now: f64) {
@@ -378,7 +598,8 @@ impl StemApp {
 
     /// Start the next queued item when nothing is running.
     fn tick_queue(&mut self, now: f64) {
-        if self.job.is_some() {
+        // The section picker is a step of the current job: the queue waits for it.
+        if self.job.is_some() || self.section.is_some() {
             return;
         }
         if let Some(item) = self.queue.next_pending() {
@@ -432,6 +653,7 @@ impl StemApp {
             cancel: Arc::new(AtomicBool::new(false)),
             shown: Stage::Decoding.overall(0.0),
             reopening: true,
+            preparing: false,
         });
         self.page = Page::Split;
         pipeline::spawn_load_history(
@@ -500,6 +722,7 @@ impl StemApp {
             analysis,
             timeline,
             chop,
+            origin: out.origin,
         });
     }
 
@@ -586,6 +809,31 @@ impl StemApp {
         self.downloads_size = None;
     }
 
+    pub fn stem_cache_dir(&self) -> PathBuf {
+        pipeline::cache::dir(&self.backend.paths, self.demo())
+    }
+
+    /// Size of the stem cache (measured once, then cached until it changes).
+    pub fn stem_cache_size(&mut self) -> u64 {
+        if self.stem_cache_size.is_none() {
+            let dir = self.stem_cache_dir();
+            self.stem_cache_size = Some(crate::paths::dir_size(&dir));
+        }
+        self.stem_cache_size.unwrap_or(0)
+    }
+
+    pub fn clear_stem_cache(&mut self) {
+        let dir = self.stem_cache_dir();
+        match crate::paths::clear_dir(&dir) {
+            Ok(n) => self.toasts.success(
+                "Stem cache cleared",
+                format!("Freed {}", crate::backend::human_bytes(n)),
+            ),
+            Err(e) => self.toasts.error("Couldn't clear the cache", e.to_string()),
+        }
+        self.stem_cache_size = None;
+    }
+
     pub fn update_ytdlp(&mut self) {
         if !self.ytdlp_busy {
             self.ytdlp_busy = true;
@@ -621,8 +869,15 @@ impl StemApp {
         // Half a frame in, so the export's `(t * sr) as usize` lands on exactly these frames.
         let (a, b) = ((f0 as f64 + 0.5) / sr, (f1 as f64 + 0.5) / sr);
         let ana = s.analysis.as_ref();
+        // Bar loops get `smpl` loop points over the whole file (clamped when rendering);
+        // short hits are flagged as one-shots.
+        let meta = crate::export::wav_meta(
+            ana,
+            bars.is_none() && b - a < 2.0,
+            bars.map(|_| (0, u32::MAX)),
+        );
         let file = crate::analysis::sample_file_name(
-            &s.title,
+            &s.file_title(),
             &name,
             ana.and_then(|x| x.bpm()),
             ana.and_then(|x| x.key.as_ref()),
@@ -643,6 +898,7 @@ impl StemApp {
             normalize: self.settings.normalize_samples,
             format,
             path,
+            meta,
         })
     }
 
@@ -718,7 +974,8 @@ impl StemApp {
         self.export_busy = true;
         crate::export::spawn(
             crate::export::StemExport {
-                title: s.title.clone(),
+                names: s.names(),
+                meta: crate::export::wav_meta(s.analysis.as_ref(), false, None),
                 stems: s.audio.clone(),
                 items,
                 template: self.settings.export_template.clone(),
@@ -842,23 +1099,37 @@ impl StemApp {
                 job.frac = None;
             }
             JobEvent::Progress(f) => job.frac = f,
+            JobEvent::Prepared(prep) => {
+                self.job = None;
+                // The picker auditions the full mix through the normal player.
+                self.player.load(prep.audio.clone());
+                self.player.set_gain(0, 1.0);
+                let preset = self.pending_preset.take();
+                self.section = Some(crate::section::SectionPick::new(*prep, preset));
+            }
             JobEvent::Title(t) => {
                 job.title = t.clone();
                 if let Some(item) = self.queue.by_job(id) {
                     item.title = t;
                 }
             }
-            JobEvent::Done(out) => {
+            JobEvent::Done(mut out) => {
                 let reopening = job.reopening;
                 let model_name = job.model_name.clone();
                 let source = job.source.display();
                 self.job = None;
                 self.downloads_size = None;
+                self.stem_cache_size = None;
                 let n = out.stems.len();
                 let (bpm, key) = out.analysis.as_ref().map_or((None, None), |a| {
                     (a.bpm(), a.key.as_ref().map(|k| k.name()))
                 });
                 if !reopening {
+                    // The worker only saw the fetched file; remember the link the user gave.
+                    if out.origin.source != source {
+                        out.origin.source = source.clone();
+                        out.origin.save(&out.out_dir);
+                    }
                     let entry = HistoryEntry {
                         title: out.title.clone(),
                         source,
@@ -1013,7 +1284,7 @@ impl eframe::App for StemApp {
         }
 
         // Space toggles playback.
-        if self.session.is_some()
+        if (self.session.is_some() || self.section.is_some())
             && self.midi.is_none()
             && !ctx.egui_wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::Space))

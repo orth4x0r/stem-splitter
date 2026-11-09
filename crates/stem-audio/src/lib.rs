@@ -5,10 +5,12 @@
 pub mod analysis;
 pub mod chop;
 mod encode;
+pub mod ensemble;
 pub mod oneshot;
 pub mod onsets;
 pub mod stft;
 pub mod stretch;
+pub mod wavmeta;
 
 pub use encode::{AudioFormat, write_audio, write_flac, write_mp3};
 

@@ -23,6 +23,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let Some(s) = &app.session else { return };
     let title = s.title.clone();
     let out_dir = s.out_dir.clone();
+    let has_sel = s.selection.is_some();
+    // A section split: its times start at 0; say where it sits in the original.
+    let section = s.origin.range.map(|r| {
+        format!(
+            "section {} – {} of the original",
+            mmss(r.start),
+            mmss(r.end)
+        )
+    });
     let meta = format!(
         "{} stems  ·  {}  ·  {}",
         s.tracks.len(),
@@ -37,10 +46,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut open_folder = false;
     let mut export_all = false;
     let mut new_split = false;
+    let mut resplit = false;
     let mut chop_open = s.chop.open;
     // Narrow windows: the header buttons shrink to icons so the title column keeps its room.
     let compact = ui.available_width() < 1000.0;
-    let right_w = if compact { 300.0 } else { 610.0 };
+    let right_w = if compact { 350.0 } else { 730.0 };
     let left_w = (ui.available_width() - right_w).max(240.0);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -72,7 +82,13 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 }
             });
             ui.add_space(6.0);
-            super::analysis_bar::chips(app, ui);
+            ui.horizontal(|ui| {
+                super::analysis_bar::chips(app, ui);
+                if let Some(sec) = &section {
+                    ui.add_space(14.0);
+                    section_badge(ui, sec);
+                }
+            });
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let hdr = |l: &'static str, b: Button<'static>| -> Button<'static> {
@@ -99,6 +115,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             )
             .show(ui)
             .clicked();
+            resplit = Button::new(label("Re-split"))
+                .icon(Icon::Scissors)
+                .enabled(has_sel)
+                .tooltip(
+                    "Split just the selected part again, from the original audio (select a region first)",
+                )
+                .show(ui)
+                .clicked();
             ui.add_space(8.0);
             buttons::segmented(
                 ui,
@@ -116,6 +140,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         if chop_open {
             s.chop.opened(s.selection);
         }
+    }
+    if resplit {
+        let now = ui.input(|i| i.time);
+        app.resplit_selection(now);
+        return;
     }
     if chop_open {
         super::chop::page(app, ui);
@@ -467,6 +496,33 @@ fn header_actions(
         app.player.unload();
         app.session = None;
     }
+}
+
+/// Small cyan pill saying which part of the original a section split covers.
+fn section_badge(ui: &mut egui::Ui, text: &str) {
+    let g = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::mono(11.5), theme::CYAN);
+    let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 30.0, 20.0), Sense::hover());
+    let p = ui.painter();
+    p.rect(
+        r,
+        CornerRadius::same(10),
+        theme::alpha(theme::CYAN, 0.10),
+        Stroke::new(1.0, theme::alpha(theme::CYAN, 0.45)),
+        StrokeKind::Inside,
+    );
+    icons::paint(
+        p,
+        Rect::from_center_size(pos2(r.left() + 12.0, r.center().y), vec2(11.0, 11.0)),
+        Icon::Scissors,
+        theme::CYAN,
+    );
+    p.galley(
+        pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0),
+        g,
+        theme::CYAN,
+    );
 }
 
 /// Label and tooltip for drag pills: a real drag on Windows, "reveal" elsewhere.

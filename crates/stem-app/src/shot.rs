@@ -11,8 +11,15 @@
 //! Polish scenes: midi-play (fake audition playhead on the roll), transform-render (a render
 //! in flight), exported (chop view just after an export: shimmer and micro-burst), playing
 //! (results with a staged playhead: the BPM chip pulses on the beat).
+//! Section scenes: section (the pre-split picker), section-loading (fetch/decode before it),
+//! section-results (results of a section split, with "Re-split selection"), section-settings
+//! (the naming template with tokens), section-home (home with "Pick a section" on).
 //! More scenes: midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set `STEM_MIDI_MODEL=nmp.onnx`
 //! and `ORT_DYLIB_PATH` to run the real model instead of the demo stand-in).
+//! Presets and chains: presets (start screen with a chain preset picked), chains (preset cards
+//! on the Models page), preset-editor (editing a chain with an ensemble step), chain-progress
+//! (step 2 of a chain running), stem-cache (Settings with the stem cache rows; use a tall
+//! `STEM_SHOT_SIZE` to reach Storage).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -129,6 +136,15 @@ impl Shot {
         ];
         match self.scene.as_str() {
             "drop" => self.force_drop = true,
+            "section" | "section-loading" => section_scene(app, &self.scene),
+            "section-home" => {
+                app.settings.pick_section = true;
+                app.url_input = "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into();
+            }
+            "section-settings" => {
+                app.page = Page::Settings;
+                app.settings.export_template = "{title} - {stem} - {bpm}bpm {key}".into();
+            }
             "progress" => {
                 app.url_input = "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into();
                 let model = app.backend.model(None).cloned();
@@ -145,6 +161,7 @@ impl Shot {
                     cancel: Arc::new(AtomicBool::new(false)),
                     shown: Stage::Separating.overall(0.62),
                     reopening: false,
+                    preparing: false,
                 });
             }
             "queue" => {
@@ -192,10 +209,11 @@ impl Shot {
                     cancel: Arc::new(AtomicBool::new(false)),
                     shown: Stage::Separating.overall(0.37),
                     reopening: false,
+                    preparing: false,
                 });
             }
             "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
-            | "transform" | "kit" | "midi" | "midi-quantize" => {
+            | "transform" | "kit" | "midi" | "midi-quantize" | "section-results" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -222,6 +240,16 @@ impl Shot {
                     out_dir: std::env::temp_dir().join("stem-splitter-demo/Midnight Drive"),
                     stems,
                     analysis,
+                    origin: if self.scene == "section-results" {
+                        crate::section::Origin {
+                            source: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".into(),
+                            input: None,
+                            range: Some(crate::section::SplitRange::new(32.0, 53.33)),
+                            model_name: "HTDemucs 4-stem".into(),
+                        }
+                    } else {
+                        Default::default()
+                    },
                 });
                 if let Some(s) = &mut app.session {
                     s.selection = Some((10.67, 13.33));
@@ -318,6 +346,9 @@ impl Shot {
                         },
                     );
                 }
+            }
+            "presets" | "chains" | "preset-editor" | "chain-progress" | "stem-cache" => {
+                preset_scene(app, &self.scene);
             }
             "library" => app.page = Page::Library,
             "settings" => app.page = Page::Settings,
@@ -448,6 +479,51 @@ impl Shot {
     }
 }
 
+/// The section picker on the demo arrangement (8 bars into the second verse, playing), or
+/// the pre-split loading step before it.
+fn section_scene(app: &mut StemApp, scene: &str) {
+    use crate::section::{Prepared, SectionPick, SplitRange};
+    let source = InputSource::Url("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into());
+    if scene == "section-loading" {
+        let model = app.backend.model(None).cloned();
+        app.job = Some(RunningJob {
+            id: 999,
+            source,
+            title: crate::demo::DEMO_TITLE.into(),
+            model_name: model.as_ref().map_or("", |m| m.name).into(),
+            stems: model.map(|m| m.stems).unwrap_or_default(),
+            stage: Stage::Decoding,
+            detail: "Finding the beat".into(),
+            frac: None,
+            started: -9.0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            shown: 0.84,
+            reopening: false,
+            preparing: true,
+        });
+        return;
+    }
+    let mix = crate::section::demo_mix();
+    let env = Envelope::from_buffer(&mix, BUCKETS);
+    let analysis = crate::analysis::analyze_stems(&[(StemKind::Other, &mix)]);
+    let prep = Prepared {
+        source,
+        title: crate::demo::DEMO_TITLE.into(),
+        input: std::env::temp_dir().join("stem-splitter-demo/input.wav"),
+        duration: mix.duration_secs(),
+        audio: Arc::new(vec![mix]),
+        env,
+        analysis,
+    };
+    app.player.load(prep.audio.clone());
+    let mut pick = SectionPick::new(prep, Some(SplitRange::new(32.0, 40.0)));
+    let start = pick.snap_time(32.0, false);
+    pick.sel.0 = start;
+    pick.set_bars(8);
+    app.player.seek(pick.sel.0 + 6.2);
+    app.section = Some(pick);
+}
+
 /// Transform panel with a finished preview render, or the kit sheet with extracted hits.
 /// Work runs inline so the capture never races a worker thread.
 fn dsp_scene(app: &mut StemApp, scene: &str) {
@@ -487,6 +563,72 @@ fn dsp_scene(app: &mut StemApp, scene: &str) {
                 audio: Arc::new(audio),
                 secs: t0.elapsed().as_secs_f64(),
             });
+        }
+    }
+}
+
+/// Presets and chains scenes: one user preset next to the built-ins, a chain picked.
+fn preset_scene(app: &mut StemApp, scene: &str) {
+    use crate::pipeline::chain::{Chain, Step, StepInput};
+    use crate::settings::Preset;
+    use stem_audio::ensemble::EnsembleMode;
+    let flip = Preset {
+        id: String::new(),
+        name: "Flip kit (6-stem)".into(),
+        description: "Vocal ensemble, then guitar and piano out of the beat for chops.".into(),
+        chain: Chain {
+            steps: vec![
+                Step {
+                    input: StepInput::Mix,
+                    models: vec!["mel-roformer-kim".into(), "mdx-kim-vocal-2".into()],
+                    ensemble: EnsembleMode::MaxSpec,
+                },
+                Step::new(StepInput::Stem(StemKind::Instrumental), "htdemucs-6s"),
+            ],
+        },
+    };
+    let id = app.settings.save_preset(flip);
+    app.settings.preset_id = Some("builtin:beatmaker-4".into());
+    match scene {
+        "presets" => {}
+        "chains" => app.page = Page::Models,
+        "preset-editor" => {
+            app.page = Page::Models;
+            app.settings.preset_id = Some(id.clone());
+            if let Some(preset) = app.settings.find_preset(&id) {
+                app.preset_editor = Some(crate::views::presets::PresetEditor {
+                    preset,
+                    existing: true,
+                });
+            }
+        }
+        "chain-progress" => {
+            let spec = app
+                .settings
+                .find_preset("builtin:beatmaker-4")
+                .and_then(|p| app.chain_spec(&p).ok());
+            app.job = Some(RunningJob {
+                id: 999,
+                source: InputSource::Url("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()),
+                title: "Midnight Drive (demo beat)".into(),
+                model_name: "Beatmaker 4-stem".into(),
+                stems: spec
+                    .and_then(|s| s.plan().ok())
+                    .map(|p| p.kinds())
+                    .unwrap_or_default(),
+                stage: Stage::Separating,
+                detail: "Step 2/2 · HTDemucs on instrumental".into(),
+                frac: Some(0.71),
+                started: -63.0,
+                cancel: Arc::new(AtomicBool::new(false)),
+                shown: Stage::Separating.overall(0.71),
+                reopening: false,
+                preparing: false,
+            });
+        }
+        _ => {
+            app.page = Page::Settings;
+            app.stem_cache_size = Some(3_420_000_000);
         }
     }
 }

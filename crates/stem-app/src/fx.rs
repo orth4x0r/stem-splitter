@@ -467,7 +467,7 @@ pub fn export_path(app: &StemApp, key: &RenderKey) -> Option<PathBuf> {
     let (dir, name) = match key.range {
         Some((f0, _)) => {
             let base = crate::analysis::sample_file_name(
-                &s.title,
+                &s.file_title(),
                 tr.kind.label(),
                 None,
                 key_after.as_ref(),
@@ -488,7 +488,12 @@ pub fn export_path(app: &StemApp, key: &RenderKey) -> Option<PathBuf> {
                 s.out_dir.join("Export"),
                 crate::export::render_name(
                     &app.settings.export_template,
-                    &s.title,
+                    // The render changes tempo / key: the stem name carries the new ones.
+                    &crate::export::NameCtx {
+                        bpm: None,
+                        key: None,
+                        ..s.names()
+                    },
                     &stem,
                     key.stem + 1,
                 ),

@@ -80,6 +80,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         let mut y = rect.top() + 48.0;
         let stage_label = if job.reopening {
             "LOADING SESSION"
+        } else if job.preparing {
+            "LOADING TRACK"
         } else {
             "SPLITTING"
         };
@@ -182,6 +184,12 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         // Stage stepper.
         let stages: Vec<Stage> = if job.reopening {
             vec![Stage::Decoding]
+        } else if job.preparing {
+            // The pre-split step stops after decoding; the section picker comes next.
+            match job.source {
+                crate::pipeline::InputSource::Url(_) => vec![Stage::Fetching, Stage::Decoding],
+                crate::pipeline::InputSource::File(_) => vec![Stage::Decoding],
+            }
         } else {
             Stage::ALL.to_vec()
         };
