@@ -421,6 +421,7 @@ impl StemApp {
             range: None,
             title,
             chain,
+            quality: self.settings.split_quality,
         };
         Some((id, cancel, req))
     }

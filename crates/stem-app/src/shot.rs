@@ -27,6 +27,7 @@
 //! chains on the Models page).
 //! Polish 4: welcome (the first-run welcome sheet), shortcuts (the `?` overlay over the
 //! results), library-hover (pair with `STEM_SHOT_POINTER` on a library card).
+//! v5: gpu-settings (Settings → Processing with split quality and two remembered GPU failures).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -383,6 +384,35 @@ impl Shot {
             }
             "library" => app.page = Page::Library,
             "settings" => app.page = Page::Settings,
+            "gpu-settings" => {
+                app.page = Page::Settings;
+                app.settings.split_quality = crate::quality::SplitQuality::Balanced;
+                let fail = |id: &str, name: &str, adapter: &str, ago: u64, reason: &str| {
+                    crate::gpu_health::GpuFailure {
+                        model_id: id.into(),
+                        model_name: name.into(),
+                        adapter: adapter.into(),
+                        when: now_unix() - ago,
+                        reason: reason.into(),
+                    }
+                };
+                crate::gpu_health::set_demo_entries(vec![
+                    fail(
+                        "mdx23c-dereverb",
+                        "MDX23C De-Reverb",
+                        "AMD Radeon RX 6700S",
+                        3 * 3600,
+                        "GPU output contained NaN/Inf",
+                    ),
+                    fail(
+                        "mel-roformer-kim",
+                        "Mel-RoFormer Vocals (Kim)",
+                        "AMD Radeon(TM) 680M",
+                        2 * 86_400,
+                        "GPU ran out of memory (8007000E Not enough memory resources)",
+                    ),
+                ]);
+            }
             "error" => {
                 app.failure = Some(Failure {
                     title: "Link from x.com".into(),

@@ -17,6 +17,7 @@ pub mod refine;
 mod results;
 mod section;
 mod settings;
+mod settings_processing;
 mod settings_tools;
 pub mod shortcuts;
 mod transform;
