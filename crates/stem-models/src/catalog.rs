@@ -422,7 +422,8 @@ const ENTRIES: &[Entry] = &[
         // tools/convert_roformer_fp16.py of mel-roformer.fp16.onnx (onnx 1.23.2,
         // onnxconverter-common 1.16.0). Same I/O as mel-roformer-kim.
         url: our_url!("mel_roformer_kim_fast.onnx"),
-        sha256: Some("62b476feaf623421d30ef070ef8fd5c3a789aef9fa9269668b3f3d0be43b287c"),
+        // Not pinned yet: the first conversion ran on a PC with memory errors (flipped bits).
+        sha256: None,
         size_bytes: 463_452_732,
         license: "MIT (weights: Kimberley Jensen; model code: ZFTurbo/Music-Source-Separation-\
                   Training and lucidrains/BS-RoFormer; ONNX export: audiojs; fp16 conversion: \
@@ -448,7 +449,8 @@ const ENTRIES: &[Entry] = &[
         // tools/convert_roformer_fp16.py of bs_roformer_4stem_rhythm_fp16.onnx. Same I/O as
         // bs-roformer-4stem.
         url: our_url!("bs_roformer_4stem_fast.onnx"),
-        sha256: Some("b25765ca9958d2798d670af38db147759a081333c708794d65979530e6c3dfd5"),
+        // Not pinned yet, as above.
+        sha256: None,
         size_bytes: 267_189_252,
         license: "MIT (weights: ZFTurbo MSST v1.0.12 model_bs_roformer_ep_17_sdr_9.6568, \
                   trained on MUSDB18-HQ; ONNX export: silverdaw; fp16 conversion: this repo)",

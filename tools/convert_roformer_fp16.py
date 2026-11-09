@@ -27,7 +27,8 @@ Usage (onnxconverter-common is MIT; install it with --no-deps, its pins downgrad
     python tools/convert_roformer_fp16.py mel-roformer.fp16.onnx mel_roformer_kim_fast.onnx
     python tools/convert_roformer_fp16.py bs_roformer_4stem_rhythm_fp16.onnx bs_roformer_4stem_fast.onnx
 
-and put the output in the app's models folder (the registry pins the expected sha256).
+and put the output in the app's models folder. Convert twice and compare the hashes before
+trusting (or pinning) a result: a machine with flaky RAM gives a few flipped weight bits.
 """
 
 import sys
@@ -48,8 +49,10 @@ def fold_weight_casts(m: onnx.ModelProto) -> onnx.ModelProto:
     Cast's output."""
     g = m.graph
     inits = {i.name: i for i in g.initializer}
+    # Track nodes by position: iterating a protobuf repeated field makes temporary wrappers
+    # whose id() values get reused, so an id() set silently drops or keeps the wrong nodes.
     new_inits, drop = [], set()
-    for n in g.node:
+    for idx, n in enumerate(g.node):
         if n.op_type != "Cast" or len(n.input) != 1 or n.input[0] not in inits:
             continue
         src = inits[n.input[0]]
@@ -57,8 +60,8 @@ def fold_weight_casts(m: onnx.ModelProto) -> onnx.ModelProto:
             continue
         arr = numpy_helper.to_array(src).astype(np.float32)
         new_inits.append(numpy_helper.from_array(arr, n.output[0]))
-        drop.add(id(n))
-    kept = [n for n in g.node if id(n) not in drop]
+        drop.add(idx)
+    kept = [n for idx, n in enumerate(g.node) if idx not in drop]
     del g.node[:]
     g.node.extend(kept)
     g.initializer.extend(new_inits)
