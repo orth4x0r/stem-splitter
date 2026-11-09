@@ -9,6 +9,7 @@
 mod analysis;
 mod app;
 mod audition;
+mod awake;
 mod backend;
 mod chop;
 mod chop_export;

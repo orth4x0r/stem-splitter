@@ -99,12 +99,15 @@ const fn roformer(overlap: f32) -> ModelArch {
     }
 }
 
-/// SCNet: n_fft 4096, hop 1024, 11 s segments every 2.75 s (the reference's step 0.25).
+/// SCNet: n_fft 4096, hop 1024, 11 s segments every 5.5 s. The reference steps by 0.25 of a
+/// segment (overlap 0.75), which runs every sample through the network four times; like the
+/// RoFormers we use 0.5, about half the run time (measured 35 s -> ~18 s per minute of audio
+/// on an RX 6700S) for a fraction of a dB.
 const SCNET: ModelArch = ModelArch::Scnet {
     n_fft: 4096,
     hop: 1024,
     segment_samples: 485_100,
-    overlap: 0.75,
+    overlap: 0.5,
 };
 
 /// The HTDemucs weights' terms; the code is MIT.

@@ -282,6 +282,8 @@ pub(crate) fn fetch_input(
 }
 
 fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<JobOutput, String> {
+    // Downloads and splits can take minutes: don't let the PC idle into standby meanwhile.
+    let _awake = crate::awake::KeepAwake::new();
     // 1. Fetch
     let (path, title) = fetch_input(req, cancel, send)?;
     check(cancel)?;

@@ -565,6 +565,7 @@ impl Runner for OrtRunner {
         };
         check(cancel)?;
         emit("loading", Some(0.0));
+        let _awake = crate::awake::KeepAwake::new();
         let mut lease = crate::model_cache::take(model, &path, self.device)?;
         let sep = &mut lease.sep;
         let on = match sep.active_device() {
