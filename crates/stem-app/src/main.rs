@@ -8,6 +8,7 @@
 
 mod analysis;
 mod app;
+mod audition;
 mod backend;
 mod chop;
 mod chop_export;
@@ -15,6 +16,7 @@ mod demo;
 mod dragout;
 mod effects;
 mod export;
+mod fx;
 mod pads;
 mod paths;
 mod pipeline;

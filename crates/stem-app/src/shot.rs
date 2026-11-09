@@ -4,6 +4,7 @@
 //! synthetic data, waits for animations to settle, saves a PNG and exits.
 //! Scenes: home, drop, progress, results, results-zoom, models, library, settings, error,
 //! queue, export, chop (transients on drums, pads lit), chop-grid (a selection chopped by beat),
+//! transform (Transform panel with a rendered preview), kit (drum-kit sheet),
 //! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
 //! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
 
@@ -173,7 +174,8 @@ impl Shot {
                     reopening: false,
                 });
             }
-            "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid" => {
+            "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
+            | "transform" | "kit" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -247,7 +249,9 @@ impl Shot {
                     };
                     s.chop.retarget();
                 }
-                if self.scene == "export" {
+                if self.scene == "transform" || self.scene == "kit" {
+                    dsp_scene(app, &self.scene);
+                } else if self.scene == "export" {
                     app.settings.export_without = true;
                     app.settings.export_format = crate::settings::ExportFormat::Flac24;
                     app.export_all_stems();
@@ -371,6 +375,49 @@ impl Shot {
                     None => eprintln!("bad screenshot buffer"),
                 }
                 ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
+            });
+        }
+    }
+}
+
+/// Transform panel with a finished preview render, or the kit sheet with extracted hits.
+/// Work runs inline so the capture never races a worker thread.
+fn dsp_scene(app: &mut StemApp, scene: &str) {
+    use std::sync::atomic::AtomicU32;
+    crate::fx::poll(app);
+    let Some(drums) = app
+        .session
+        .as_ref()
+        .and_then(|s| s.tracks.iter().position(|t| t.kind == StemKind::Drums))
+    else {
+        return;
+    };
+    let ctx = app.dsp.ctx();
+    if scene == "kit" {
+        let audio = app.session.as_ref().map(|s| s.audio[drums].clone());
+        if let Some(audio) = audio {
+            crate::fx::open_kit_blocking(app, drums, &audio);
+        }
+        return;
+    }
+    if let Some(s) = &mut app.session {
+        s.selection = Some((10.67, 13.33));
+        s.sel_track = 0;
+    }
+    app.dsp.ui.stem = 0;
+    app.dsp.ui.bpm = 95.0;
+    app.dsp.ui.semis = 3;
+    app.dsp.scroll_to_panel = true;
+    if let Ok(key) = crate::fx::current_key(app)
+        && let Some(s) = &app.session
+    {
+        let t0 = std::time::Instant::now();
+        let never = AtomicBool::new(false);
+        if let Ok(audio) = crate::fx::render_key(&s.audio, &key, &AtomicU32::new(0), &never, &ctx) {
+            app.dsp.last = Some(crate::fx::Rendered {
+                key,
+                audio: Arc::new(audio),
+                secs: t0.elapsed().as_secs_f64(),
             });
         }
     }

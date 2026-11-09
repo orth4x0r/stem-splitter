@@ -162,6 +162,8 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// Transform renders, kit extraction and their audition player.
+    pub dsp: crate::fx::Fx,
     /// Ambient background, aurora and celebration state.
     pub fx: crate::effects::Fx,
     pub splash: crate::splash::Splash,
@@ -230,6 +232,7 @@ impl StemApp {
             dragged_out: (Vec::new(), 0.0),
             ffmpeg: FfmpegState::default(),
             downloads_size: None,
+            dsp: crate::fx::Fx::new(cc.egui_ctx.clone()),
             fx: crate::effects::Fx::default(),
             splash: crate::splash::Splash::new(false),
             perf: std::env::var_os("STEM_PERF").map(|_| Perf::default()),
@@ -986,6 +989,7 @@ impl eframe::App for StemApp {
         }
         theme::motion::set_reduced(self.settings.reduce_motion);
         self.pump(now);
+        crate::fx::poll(self);
         self.handle_drops(&ctx, now);
         self.tick_queue(now);
         self.sync_player(dt);
@@ -1033,6 +1037,7 @@ impl eframe::App for StemApp {
             || self.export_busy
             || self.queue.has_work()
             || self.toasts.is_animating()
+            || self.dsp.busy()
             || chop_animating
             || self
                 .session
