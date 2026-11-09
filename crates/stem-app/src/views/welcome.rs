@@ -150,7 +150,6 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             if Button::primary("Get started")
-                .icon(Icon::Sparkle)
                 .height(40.0)
                 .min_width(150.0)
                 .show(ui)

@@ -24,30 +24,12 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
             let rect = ui.max_rect();
             let t = ui.input(|i| i.time);
             let playing = app.player.is_playing();
-            let busy = app.job.is_some() || playing;
             let level = app.fx.master;
             let p = ui.painter();
 
-            // Flowing accent line along the bottom edge; breathes with the music.
-            let flow = ui.ctx().animate_value_with_time(
-                Id::unique("header-flow"),
-                if busy { 1.0 } else { 0.0 },
-                0.6,
-            );
-            let u = if (busy || flow > 0.0) && !motion::reduced() {
-                (t * 0.12) as f32
-            } else {
-                0.0
-            };
-            let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.5), rect.max);
-            paint::glow(
-                p,
-                line,
-                CornerRadius::ZERO,
-                theme::alpha(theme::VIOLET, 0.22 + 0.3 * flow + 0.4 * level),
-                10.0 + 16.0 * level,
-            );
-            paint::gradient_strip(p, line, u, u + 1.0);
+            // Quiet hairline along the bottom edge.
+            let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), rect.max);
+            p.rect_filled(line, CornerRadius::ZERO, theme::STROKE);
 
             // Logo mark: bars dance to the stems while playing, ripple while splitting.
             let tile = splash::tile_at(pos2(rect.left() + 38.0, rect.center().y), 36.0);
@@ -71,30 +53,13 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
                 .collect();
             splash::logo_mark(p, tile, &bars, 0.5 + 0.5 * level, 1.0, playing);
 
-            // Wordmark: white + gradient.
-            let x = tile.right() + 14.0;
-            let g = p.layout_no_wrap("STEM ".into(), theme::bold(17.0), theme::TEXT);
-            let w = g.size().x;
-            p.galley(
-                pos2(x, rect.center().y - 9.0 - g.size().y / 2.0),
-                g,
-                theme::TEXT,
-            );
-            paint::gradient_text(
-                p,
-                pos2(x + w, rect.center().y - 9.0),
-                Align2::LEFT_CENTER,
-                "SPLITTER",
-                theme::bold(17.0),
-                (0.0, 0.9),
-                1.0,
-            );
+            // Wordmark: the product name, in the interface face.
             p.text(
-                pos2(x + 1.0, rect.center().y + 11.0),
+                pos2(tile.right() + 12.0, rect.center().y),
                 Align2::LEFT_CENTER,
-                "AI stems · samples · flips",
-                theme::regular(11.5),
-                theme::TEXT_FAINT,
+                "Stem Splitter",
+                theme::bold(16.0),
+                theme::TEXT,
             );
 
             // Centre: live job pill, so a split stays visible from any page.
@@ -118,7 +83,7 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
                     r,
                     CornerRadius::same(17),
                     theme::GLASS,
-                    Stroke::new(1.0, theme::alpha(theme::VIOLET, 0.6)),
+                    Stroke::new(1.0, theme::STROKE_HI),
                     StrokeKind::Inside,
                 );
                 progress::ring(
@@ -201,7 +166,7 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
                     r,
                     CornerRadius::same(15),
                     theme::lerp_color(theme::GLASS, theme::CARD_HI, h),
-                    Stroke::new(1.0, theme::lerp_color(theme::STROKE, color, 0.3 + 0.5 * h)),
+                    Stroke::new(1.0, theme::lerp_color(theme::STROKE, theme::STROKE_HI, h)),
                     StrokeKind::Inside,
                 );
                 paint::glass_sheen(p, r, CornerRadius::same(15), h);
@@ -209,7 +174,8 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
                 let ir =
                     Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(14.0, 14.0));
                 paint::glow_circle(p, ir.center(), 4.0, theme::alpha(color, 0.35), 8.0);
-                icons::paint(p, ir, icon, color);
+                let _ = color;
+                icons::paint(p, ir, icon, theme::TEXT_DIM);
                 p.galley(
                     pos2(r.left() + 32.0, r.center().y - galley.size().y / 2.0),
                     galley,
@@ -236,16 +202,16 @@ pub fn header(app: &mut StemApp, ui: &mut egui::Ui) {
                 p.rect(
                     r,
                     CornerRadius::same(11),
-                    theme::alpha(theme::WARN, 0.12),
-                    Stroke::new(1.0, theme::alpha(theme::WARN, 0.5)),
+                    Color32::TRANSPARENT,
+                    Stroke::new(1.0, theme::STROKE_HI),
                     StrokeKind::Inside,
                 );
                 p.text(
                     r.center(),
                     Align2::CENTER_CENTER,
-                    "DEMO",
-                    theme::bold(11.0),
-                    theme::WARN,
+                    "Demo",
+                    theme::mono(11.0),
+                    theme::TEXT_DIM,
                 );
             }
         });
@@ -306,7 +272,8 @@ pub fn sidebar(app: &mut StemApp, ui: &mut egui::Ui) {
             let t = ui.input(|i| i.time);
             for (page, icon, label, key) in NAV {
                 let (r, resp) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+                    ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                ui.add_space(-6.0);
                 let resp = resp
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .on_hover_text(format!("{label}  (Ctrl+{})", key.name()));
@@ -321,16 +288,13 @@ pub fn sidebar(app: &mut StemApp, ui: &mut egui::Ui) {
                     .ctx()
                     .animate_bool_with_time(resp.id, resp.hovered(), motion::FAST);
                 let sel = app.page == page;
-                let nudge = motion::bouncy(
-                    ui.ctx(),
-                    resp.id.with("nudge"),
-                    if resp.hovered() || sel { 3.0 } else { 0.0 },
-                );
+                // Rows stay put on hover: feedback is a surface change, not movement.
+                let nudge = 0.0;
                 let p = ui.painter();
                 if h > 0.0 && !sel {
                     p.rect_filled(
                         r,
-                        CornerRadius::same(10),
+                        CornerRadius::same(8),
                         Color32::from_white_alpha((8.0 * h) as u8),
                     );
                 }
@@ -341,18 +305,15 @@ pub fn sidebar(app: &mut StemApp, ui: &mut egui::Ui) {
                 };
                 let ic = pos2(r.left() + 24.0 + nudge * 0.5, r.center().y);
                 let ir = Rect::from_center_size(ic, vec2(17.0, 17.0));
-                if sel {
-                    paint::glow_circle(p, ic, 6.0, theme::alpha(theme::PINK, 0.45), 14.0);
-                }
-                icons::paint(p, ir, icon, if sel { theme::PINK } else { color });
+                icons::paint(p, ir, icon, color);
                 p.text(
                     pos2(r.left() + 46.0 + nudge, r.center().y),
                     Align2::LEFT_CENTER,
                     label,
-                    theme::semi(14.0),
+                    theme::regular(14.0),
                     color,
                 );
-                paint::focus(p, &resp, r, CornerRadius::same(10));
+                paint::focus(p, &resp, r, CornerRadius::same(8));
 
                 // Badges: running job, history count.
                 let badge = match page {
@@ -366,25 +327,14 @@ pub fn sidebar(app: &mut StemApp, ui: &mut egui::Ui) {
                 if let Some(b) = badge {
                     let c = pos2(r.right() - 20.0, r.center().y);
                     if b.is_empty() {
-                        progress::dots(p, c, 7.0, t, theme::CYAN);
+                        progress::dots(p, c, 7.0, t, theme::ACCENT);
                     } else {
                         let br = Rect::from_center_size(c, vec2(26.0, 18.0));
                         p.rect(
                             br,
                             CornerRadius::same(9),
-                            if sel {
-                                theme::alpha(theme::PINK, 0.18)
-                            } else {
-                                theme::CARD_HI
-                            },
-                            Stroke::new(
-                                1.0,
-                                if sel {
-                                    theme::alpha(theme::PINK, 0.45)
-                                } else {
-                                    theme::STROKE
-                                },
-                            ),
+                            Color32::TRANSPARENT,
+                            Stroke::NONE,
                             StrokeKind::Inside,
                         );
                         p.text(
@@ -401,48 +351,16 @@ pub fn sidebar(app: &mut StemApp, ui: &mut egui::Ui) {
             if let Some((_, r)) = rects.iter().find(|(p, _)| *p == app.page) {
                 let y = motion::smooth(ui.ctx(), Id::unique("nav-sel"), r.top());
                 let sel = Rect::from_min_size(pos2(r.left(), y), r.size());
-                let ctx = ui.ctx().clone();
-                let bar = Rect::from_min_size(
-                    pos2(sel.left() - 14.0, sel.top() + 9.0),
-                    vec2(3.0, sel.height() - 18.0),
-                );
+                // Active row: a small surface step with a hairline.
                 let shapes = vec![
-                    paint::glow_shape(
-                        sel,
-                        CornerRadius::same(10),
-                        theme::alpha(theme::VIOLET, 0.16),
-                        16.0,
-                    ),
                     egui::epaint::RectShape::new(
                         sel,
-                        CornerRadius::same(10),
-                        Color32::from_rgb(30, 26, 54),
-                        Stroke::new(1.0, theme::alpha(theme::VIOLET, 0.5)),
+                        CornerRadius::same(8),
+                        theme::CARD_HI,
+                        Stroke::new(1.0, Color32::from_white_alpha(10)),
                         StrokeKind::Inside,
                     )
                     .into(),
-                    paint::gradient_rect_shape(
-                        &ctx,
-                        sel.shrink(1.0),
-                        CornerRadius::same(9),
-                        0.0,
-                        1.0,
-                        Color32::from_white_alpha(14),
-                    ),
-                    paint::glow_shape(
-                        bar,
-                        CornerRadius::same(2),
-                        theme::alpha(theme::PINK, 0.8),
-                        8.0,
-                    ),
-                    paint::gradient_rect_shape(
-                        &ctx,
-                        bar,
-                        CornerRadius::same(2),
-                        0.0,
-                        0.6,
-                        Color32::WHITE,
-                    ),
                 ];
                 ui.painter().set(pill_slot, egui::Shape::Vec(shapes));
             }
@@ -463,20 +381,17 @@ fn engine_card(app: &StemApp, ui: &egui::Ui, full: Rect) {
     };
     let card = Rect::from_min_max(pos2(full.left(), bottom - h), pos2(full.right(), bottom));
     let p = ui.painter();
-    if has_session {
-        meter::level_glow(p, card, CornerRadius::same(12), theme::PINK, app.fx.master);
-    }
     paint::glass(p, card, CornerRadius::same(12), None, 0.0);
     let (dot, label, status) = if app.job.is_some() {
-        (theme::CYAN, "ENGINE", "Working")
+        (theme::CYAN, "Engine", "Working")
     } else if app.backend.problem.is_some() {
-        (theme::WARN, "ENGINE", "Backend missing")
+        (theme::WARN, "Engine", "Backend missing")
     } else if has_session && app.player.is_playing() {
-        (theme::PINK, "OUTPUT", "Playing")
+        (theme::PINK, "Output", "Playing")
     } else if has_session {
-        (theme::GOOD, "OUTPUT", "Ready")
+        (theme::GOOD, "Output", "Ready")
     } else {
-        (theme::GOOD, "ENGINE", "Ready")
+        (theme::GOOD, "Engine", "Ready")
     };
     p.text(
         pos2(card.left() + 14.0, card.top() + 18.0),
@@ -621,40 +536,12 @@ pub fn drop_overlay(ctx: &egui::Context) {
                 Color32::from_rgba_unmultiplied(5, 5, 10, (222.0 * appear) as u8),
             );
             let inner = screen.shrink(28.0);
-            let pulse = paint::pulse(t, 1.1);
             let c = inner.center() - vec2(0.0, 30.0);
-            // Room light.
-            paint::glow_circle(
-                p,
-                c,
-                160.0,
-                theme::alpha(theme::VIOLET, 0.14 + 0.06 * pulse),
-                260.0,
-            );
-            // Neon rim: thin glowing strips along each edge, so the middle stays dark.
-            let glow_c = theme::alpha(theme::VIOLET, 0.35 + 0.3 * pulse);
-            for edge in [
-                Rect::from_min_max(inner.left_top(), pos2(inner.right(), inner.top() + 2.0)),
-                Rect::from_min_max(
-                    pos2(inner.left(), inner.bottom() - 2.0),
-                    inner.right_bottom(),
-                ),
-                Rect::from_min_max(inner.left_top(), pos2(inner.left() + 2.0, inner.bottom())),
-                Rect::from_min_max(pos2(inner.right() - 2.0, inner.top()), inner.right_bottom()),
-            ] {
-                paint::glow(
-                    p,
-                    edge.shrink2(vec2(20.0, 20.0).min(edge.size() / 2.0 - vec2(0.5, 0.5))),
-                    CornerRadius::same(2),
-                    glow_c,
-                    28.0,
-                );
-            }
             paint::dashed_rect(
                 p,
                 inner,
                 28.0,
-                Stroke::new(3.0, theme::accent_at((t * 0.2) as f32)),
+                Stroke::new(2.0, theme::TEXT_DIM),
                 16.0,
                 10.0,
                 if motion::reduced() {
@@ -663,71 +550,25 @@ pub fn drop_overlay(ctx: &egui::Context) {
                     (t * 40.0) as f32
                 },
             );
-            // Sonar rings pulling the file in.
-            if !motion::reduced() {
-                for k in 0..3 {
-                    let f = ((t * 0.6 + k as f64 / 3.0) % 1.0) as f32;
-                    let r = 220.0 - 160.0 * f;
-                    p.circle_stroke(
-                        c,
-                        r,
-                        Stroke::new(
-                            1.5,
-                            theme::alpha(
-                                theme::accent_at(k as f32 * 0.4),
-                                0.5 * f * (1.0 - f) * 4.0 * 0.5,
-                            ),
-                        ),
-                    );
-                }
-            }
-            // Stem-coloured satellites orbiting the target.
-            let sats = [
-                theme::stem_color(stem_models::StemKind::Vocals),
-                theme::stem_color(stem_models::StemKind::Drums),
-                theme::stem_color(stem_models::StemKind::Bass),
-                theme::stem_color(stem_models::StemKind::Other),
-            ];
-            for (i, col) in sats.iter().enumerate() {
-                let a = (t * 0.9) as f32 + i as f32 * std::f32::consts::TAU / 4.0;
-                let sp = c + vec2(a.cos() * 96.0, a.sin() * 96.0 * 0.92);
-                paint::glow_circle(p, sp, 4.0, theme::alpha(*col, 0.6), 12.0);
-                p.circle_filled(sp, 4.5, *col);
-            }
-            let rr = 52.0 + 6.0 * pulse;
-            paint::glow_circle(p, c, rr, theme::alpha(theme::PINK, 0.35), 30.0);
-            let disc = Rect::from_center_size(c, vec2(2.0 * rr, 2.0 * rr));
-            paint::gradient_rect(
-                p,
-                disc,
-                CornerRadius::same(rr as u8),
-                (t * 0.1) as f32,
-                (t * 0.1) as f32 + 1.0,
-                Color32::WHITE,
-            );
-            paint::glass_sheen(p, disc, CornerRadius::same(rr as u8), 1.0);
-            let bob = if motion::reduced() {
-                0.0
-            } else {
-                4.0 * (t * 3.0).sin() as f32
-            };
+            let rr = 44.0;
+            p.circle(c, rr, theme::CARD_HI, Stroke::new(1.0, theme::STROKE_HI));
             icons::paint(
                 p,
-                Rect::from_center_size(disc.center() + vec2(0.0, bob), vec2(40.0, 40.0)),
+                Rect::from_center_size(c, vec2(32.0, 32.0)),
                 Icon::Download,
-                Color32::WHITE,
+                theme::TEXT,
             );
             p.text(
                 c + vec2(0.0, 132.0),
                 Align2::CENTER_CENTER,
                 "Drop to split",
-                theme::bold(30.0),
+                theme::bold(28.0),
                 theme::TEXT,
             );
             p.text(
                 c + vec2(0.0, 166.0),
                 Align2::CENTER_CENTER,
-                "WAV · MP3 · FLAC · M4A · OGG",
+                "wav, mp3, flac, m4a or ogg",
                 theme::mono(13.0),
                 theme::TEXT_DIM,
             );

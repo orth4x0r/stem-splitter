@@ -548,16 +548,14 @@ fn class_header(ui: &mut egui::Ui, color: Color32, title: &str, counts: &str) {
         paint::glow_circle(ui.painter(), r.center(), 3.0, theme::alpha(color, 0.6), 8.0);
         ui.painter().circle_filled(r.center(), 3.5, color);
         ui.label(
-            egui::RichText::new(title.to_uppercase())
+            egui::RichText::new(crate::widgets::sentence_case(title))
                 .font(theme::semi(theme::size::CAPTION))
-                .color(theme::lerp_color(color, theme::TEXT, 0.35))
-                .extra_letter_spacing(1.2),
+                .color(theme::lerp_color(color, theme::TEXT, 0.35)),
         );
         ui.label(
-            egui::RichText::new(counts.to_uppercase())
+            egui::RichText::new(counts)
                 .font(theme::semi(theme::size::CAPTION))
-                .color(theme::TEXT_FAINT)
-                .extra_letter_spacing(1.0),
+                .color(theme::TEXT_FAINT),
         );
     });
 }

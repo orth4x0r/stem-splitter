@@ -83,7 +83,7 @@ pub fn chips(app: &mut StemApp, ui: &mut egui::Ui) {
         if s.analysis.as_ref().is_some_and(|a| a.grid.is_some()) {
             ui.add_space(18.0);
             ui.label(
-                egui::RichText::new("SNAP")
+                egui::RichText::new("Snap")
                     .font(theme::semi(10.5))
                     .color(theme::TEXT_FAINT),
             );

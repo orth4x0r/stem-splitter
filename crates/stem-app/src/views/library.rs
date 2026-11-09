@@ -27,8 +27,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             "Split a track and it shows up here, ready to re-open and keep chopping.",
         );
         ui.vertical_centered(|ui| {
-            if Button::primary("Split something")
-                .icon(Icon::Sparkle)
+            if Button::primary("Split a track")
+                .icon(Icon::Split)
                 .height(40.0)
                 .show(ui)
                 .clicked()
@@ -54,7 +54,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             entries.len() as f32,
             |v| format!("{v:.0}"),
             "Sessions",
-            theme::PINK,
+            theme::TEXT_FAINT,
         );
         crate::widgets::stat_tile(
             ui,
@@ -62,7 +62,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             total_stems as f32,
             |v| format!("{v:.0}"),
             "Stems on disk",
-            theme::VIOLET,
+            theme::TEXT_FAINT,
         );
         crate::widgets::stat_tile(
             ui,
@@ -70,7 +70,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             total_secs as f32,
             |v| mmss(v as f64),
             "Audio split",
-            theme::CYAN,
+            theme::TEXT_FAINT,
         );
     });
     ui.add_space(18.0);

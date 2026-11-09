@@ -1166,7 +1166,7 @@ impl StemApp {
                             .iter()
                             .map(|s| theme::stem_color(s.kind))
                             .collect(),
-                        format!("{n} STEMS READY"),
+                        format!("{n} stems ready"),
                     );
                 } else if let Some(h) = self
                     .settings

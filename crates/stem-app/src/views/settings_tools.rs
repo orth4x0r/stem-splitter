@@ -53,12 +53,7 @@ pub fn naming_row(app: &mut StemApp, ui: &mut egui::Ui) {
         ui.add_space(190.0);
         ui.spacing_mut().item_spacing.x = 6.0;
         for tok in TOKENS {
-            let color = match tok {
-                "{bpm}" => theme::PINK,
-                "{key}" => theme::VIOLET,
-                "{range}" => theme::CYAN,
-                _ => theme::TEXT_DIM,
-            };
+            let color = theme::TEXT_FAINT;
             if crate::widgets::buttons::chip(ui, tok, color, false)
                 .on_hover_text("Add to the template")
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -108,7 +103,7 @@ pub fn naming_row(app: &mut StemApp, ui: &mut egui::Ui) {
             ui.painter().text(
                 pos2(r.left(), r.center().y),
                 egui::Align2::LEFT_CENTER,
-                label.to_uppercase(),
+                crate::widgets::sentence_case(label),
                 theme::semi(10.0),
                 theme::TEXT_GHOST,
             );

@@ -344,7 +344,7 @@ impl Shot {
                 if self.scene == "celebrate" {
                     app.fx.celebrate(
                         kinds.iter().map(|k| crate::theme::stem_color(*k)).collect(),
-                        "4 STEMS READY",
+                        "4 stems ready",
                     );
                 }
             }

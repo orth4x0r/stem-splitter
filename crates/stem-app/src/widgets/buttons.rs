@@ -118,7 +118,7 @@ impl<'a> Button<'a> {
         };
         let galley = ui
             .painter()
-            .layout_no_wrap(self.label.to_owned(), font, Color32::WHITE);
+            .layout_no_wrap(self.label.to_owned(), font, Color32::PLACEHOLDER);
         let icon_w = if self.icon.is_some() { 18.0 } else { 0.0 };
         let gap = if self.icon.is_some() && !self.label.is_empty() {
             8.0
@@ -167,30 +167,10 @@ impl<'a> Button<'a> {
 
         let text_color = match (self.kind, self.enabled) {
             (Kind::Primary, true) => {
-                paint::glow(
-                    p,
-                    rect.translate(vec2(0.0, 4.0)),
-                    r,
-                    theme::alpha(theme::VIOLET, 0.35 + 0.35 * hover),
-                    14.0 + 10.0 * hover,
-                );
-                paint::glow(
-                    p,
-                    rect,
-                    r,
-                    theme::alpha(theme::PINK, 0.12 + 0.18 * hover),
-                    8.0,
-                );
-                let shift = hover * 0.35;
-                paint::gradient_rect(p, rect, r, shift, 1.0 + shift, Color32::WHITE);
-                paint::glass_sheen(p, rect, r, 0.8 + hover);
-                // A light band sweeps across once on hover.
-                let sweep = ctx.animate_bool_with_time(resp.id.with("sweep"), resp.hovered(), 0.55);
-                if resp.hovered() {
-                    paint::shine(p, rect, sweep, 2.2);
-                }
-                paint::ripple(p, &resp, rect, Color32::WHITE);
-                Color32::WHITE
+                // Off-white from the neutral ramp with dark text: the one loud control.
+                let fill = theme::lerp_color(theme::PRIMARY, Color32::WHITE, hover * 0.6);
+                p.rect_filled(rect, r, fill);
+                theme::ON_ACCENT
             }
             (Kind::Danger, true) => {
                 let fill = theme::lerp_color(
@@ -220,12 +200,9 @@ impl<'a> Button<'a> {
                 theme::lerp_color(theme::TEXT_DIM, Color32::WHITE, hover)
             }
             (_, true) => {
-                let fill = theme::lerp_color(
-                    Color32::from_rgba_premultiplied(26, 26, 42, 235),
-                    Color32::from_rgb(40, 38, 66),
-                    hover,
-                );
-                let stroke = theme::lerp_color(theme::STROKE_HI, theme::VIOLET, hover);
+                let fill = theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 44, 48), hover);
+                let stroke =
+                    theme::lerp_color(theme::STROKE_HI, Color32::from_rgb(84, 84, 90), hover);
                 if hover > 0.0 {
                     paint::glow(p, rect, r, theme::alpha(theme::VIOLET, 0.22 * hover), 14.0);
                 }
@@ -308,7 +285,7 @@ pub fn icon_button(
         paint::glow(p, rect, r, theme::alpha(color, 0.45 * on), 10.0);
     }
     let fill = theme::lerp_color(
-        theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 42, 70), hover),
+        theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 44, 48), hover),
         color,
         on * 0.9,
     );
@@ -357,7 +334,7 @@ pub fn letter_toggle(
         paint::glow(p, rect, r, theme::alpha(color, 0.5 * on), 10.0);
     }
     let fill = theme::lerp_color(
-        theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 42, 70), hover),
+        theme::lerp_color(theme::CARD_HI, Color32::from_rgb(44, 44, 48), hover),
         color,
         on,
     );
@@ -524,7 +501,7 @@ pub fn segmented<T: PartialEq + Copy>(
     let p = ui.painter().clone();
     p.rect(
         rect,
-        CornerRadius::same(10),
+        CornerRadius::same(8),
         theme::alpha(Color32::BLACK, 0.35),
         Stroke::new(1.0, theme::STROKE),
         StrokeKind::Inside,
@@ -544,15 +521,14 @@ pub fn segmented<T: PartialEq + Copy>(
         pos2(sel_x, rect.top() + 3.0),
         vec2(sel_w, rect.height() - 6.0),
     );
-    paint::glow(
-        &p,
+    // The selection is a surface step with a hairline, not a coloured fill.
+    p.rect(
         hl,
-        CornerRadius::same(8),
-        theme::alpha(theme::VIOLET, 0.3),
-        10.0,
+        CornerRadius::same(6),
+        Color32::from_rgb(56, 56, 61),
+        Stroke::new(1.0, Color32::from_white_alpha(14)),
+        StrokeKind::Inside,
     );
-    paint::gradient_rect(&p, hl, CornerRadius::same(8), 0.15, 0.85, Color32::WHITE);
-    paint::glass_sheen(&p, hl, CornerRadius::same(8), 0.8);
     let mut changed = false;
     for (i, ((v, label), w)) in options.iter().zip(&widths).enumerate() {
         let r = Rect::from_min_size(pos2(xs[i], rect.top()), vec2(*w, rect.height()));
@@ -576,12 +552,6 @@ pub fn segmented<T: PartialEq + Copy>(
                 pill,
                 CornerRadius::same(8),
                 Color32::from_white_alpha((14.0 * h) as u8),
-            );
-            p.rect_stroke(
-                pill,
-                CornerRadius::same(8),
-                Stroke::new(1.0, theme::alpha(theme::VIOLET, 0.35 * h)),
-                StrokeKind::Inside,
             );
         }
         paint::ripple(&p, &resp, r.shrink(3.0), theme::VIOLET);
@@ -646,13 +616,10 @@ pub fn slider(
     let f = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0);
     let kx = track.left() + track.width() * f;
     if kx > track.left() + 1.0 {
-        paint::gradient_rect(
-            p,
+        p.rect_filled(
             Rect::from_min_max(track.min, pos2(kx, track.max.y)),
             CornerRadius::same(3),
-            0.0,
-            f.max(0.05),
-            Color32::WHITE,
+            theme::TEXT_DIM,
         );
     }
     paint::glow_circle(

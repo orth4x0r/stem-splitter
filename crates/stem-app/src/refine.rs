@@ -248,7 +248,7 @@ impl StemApp {
                 };
                 self.toasts
                     .success(format!("{what} ready"), job.model_name.clone());
-                self.fx.celebrate(colors, what.to_uppercase());
+                self.fx.celebrate(colors, what.to_string());
             }
         }
     }

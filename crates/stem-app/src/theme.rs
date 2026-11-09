@@ -1,4 +1,4 @@
-//! Colours, fonts and egui style for the "neon studio" look.
+//! Colours, fonts and egui style: quiet graphite chrome, colour in the stems.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Shadow, Stroke,
@@ -7,83 +7,102 @@ use eframe::egui::{
 use stem_models::StemKind;
 
 // ---- palette -------------------------------------------------------------------------------
+//
+// Direction (unslop pass): a late-night studio desk. The chrome is quiet graphite, like a
+// mixing console in a dark room; the colour lives in the stems (each one a channel colour
+// that means "this is the vocals / drums / ...") and in one warm accent, the amber of a lit
+// VU meter, used for the playhead, the selection and the one number that matters.
 
-/// Window background: almost-black with a hint of indigo.
-pub const BG: Color32 = Color32::from_rgb(9, 9, 15);
+/// Window background: graphite.
+pub const BG: Color32 = Color32::from_rgb(17, 17, 19);
 /// Sidebar / header background.
-pub const BG_PANEL: Color32 = Color32::from_rgb(13, 13, 22);
+pub const BG_PANEL: Color32 = Color32::from_rgb(21, 21, 23);
 /// Card surface.
-pub const CARD: Color32 = Color32::from_rgb(20, 20, 33);
+pub const CARD: Color32 = Color32::from_rgb(26, 26, 29);
 /// Raised surface inside a card (inputs, chips).
-pub const CARD_HI: Color32 = Color32::from_rgb(28, 28, 45);
-pub const STROKE: Color32 = Color32::from_rgb(38, 38, 60);
-pub const STROKE_HI: Color32 = Color32::from_rgb(62, 60, 96);
+pub const CARD_HI: Color32 = Color32::from_rgb(34, 34, 38);
+/// Hairline (the text colour at ~8% on the surfaces).
+pub const STROKE: Color32 = Color32::from_rgb(40, 40, 44);
+pub const STROKE_HI: Color32 = Color32::from_rgb(58, 58, 63);
 
-pub const TEXT: Color32 = Color32::from_rgb(236, 236, 248);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(150, 150, 178);
-/// Faint text still meets WCAG AA (4.5:1) on `BG` and ~4.4:1 on `CARD`.
-pub const TEXT_FAINT: Color32 = Color32::from_rgb(124, 124, 156);
+pub const TEXT: Color32 = Color32::from_rgb(236, 236, 232);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(164, 164, 160);
+/// Faint text still meets WCAG AA (4.5:1) on `BG` and `CARD`.
+pub const TEXT_FAINT: Color32 = Color32::from_rgb(132, 132, 130);
 /// Purely decorative text (never the only carrier of information).
 #[allow(dead_code)]
-pub const TEXT_GHOST: Color32 = Color32::from_rgb(84, 84, 110);
+pub const TEXT_GHOST: Color32 = Color32::from_rgb(88, 88, 90);
 
-/// Accent gradient stops: hot pink -> violet -> cyan.
-pub const PINK: Color32 = Color32::from_rgb(255, 46, 136);
-pub const VIOLET: Color32 = Color32::from_rgb(139, 92, 246);
-pub const CYAN: Color32 = Color32::from_rgb(34, 211, 238);
-pub const ACCENT_GRADIENT: [Color32; 3] = [PINK, VIOLET, CYAN];
+/// The one accent: VU-lamp amber. Dark text on it (`ON_ACCENT`) clears 4.5:1.
+pub const ACCENT: Color32 = Color32::from_rgb(236, 170, 72);
+/// Text / icons drawn on an `ACCENT` or `PRIMARY` fill.
+pub const ON_ACCENT: Color32 = Color32::from_rgb(20, 18, 16);
+/// Primary button fill: off-white from the ramp, with dark text.
+pub const PRIMARY: Color32 = Color32::from_rgb(232, 232, 226);
 
-pub const GOOD: Color32 = Color32::from_rgb(52, 211, 153);
-pub const WARN: Color32 = Color32::from_rgb(251, 191, 36);
-pub const BAD: Color32 = Color32::from_rgb(248, 113, 113);
+/// Legacy names from the neon theme. They all resolve to the single accent now, so old
+/// call sites stay quiet; prefer `ACCENT` (or a neutral) in new code.
+pub const PINK: Color32 = ACCENT;
+pub const VIOLET: Color32 = ACCENT;
+pub const CYAN: Color32 = ACCENT;
+/// "Gradient" stops: one colour, so every gradient fill paints as a solid accent.
+pub const ACCENT_GRADIENT: [Color32; 3] = [ACCENT, ACCENT, ACCENT];
 
+pub const GOOD: Color32 = Color32::from_rgb(98, 196, 140);
+pub const WARN: Color32 = Color32::from_rgb(226, 182, 80);
+pub const BAD: Color32 = Color32::from_rgb(226, 108, 100);
+
+/// Channel colours: one hue per stem, toned down so they sit on graphite like the coloured
+/// scribble strips on a console. These are the screen's colour; the chrome stays grey.
 pub fn stem_color(kind: StemKind) -> Color32 {
-    match kind {
-        StemKind::Vocals => Color32::from_rgb(255, 77, 157),
-        StemKind::Drums => Color32::from_rgb(255, 170, 51),
-        StemKind::Bass => Color32::from_rgb(150, 105, 255),
-        StemKind::Other => Color32::from_rgb(34, 211, 238),
-        StemKind::Instrumental => Color32::from_rgb(45, 212, 191),
-        StemKind::Guitar => Color32::from_rgb(74, 222, 128),
-        StemKind::Piano => Color32::from_rgb(253, 224, 71),
-        StemKind::Dialogue => Color32::from_rgb(251, 146, 60),
-        StemKind::Music => Color32::from_rgb(96, 165, 250),
-        StemKind::Effects => Color32::from_rgb(244, 114, 182),
-        StemKind::LeadVocals => Color32::from_rgb(255, 92, 120),
-        StemKind::BackingVocals => Color32::from_rgb(232, 121, 249),
+    let c = match kind {
+        StemKind::Vocals => Color32::from_rgb(240, 110, 150),
+        StemKind::Drums => Color32::from_rgb(240, 132, 76),
+        StemKind::Bass => Color32::from_rgb(132, 128, 250),
+        StemKind::Other => Color32::from_rgb(70, 196, 210),
+        StemKind::Instrumental => Color32::from_rgb(64, 196, 168),
+        StemKind::Guitar => Color32::from_rgb(120, 206, 110),
+        StemKind::Piano => Color32::from_rgb(232, 208, 100),
+        StemKind::Dialogue => Color32::from_rgb(244, 156, 84),
+        StemKind::Music => Color32::from_rgb(100, 156, 240),
+        StemKind::Effects => Color32::from_rgb(220, 120, 200),
+        StemKind::LeadVocals => Color32::from_rgb(244, 100, 120),
+        StemKind::BackingVocals => Color32::from_rgb(208, 128, 236),
         // Drum parts: the skins warm like the drums stem they come from, the metals cool.
-        StemKind::Kick => Color32::from_rgb(255, 94, 58),
-        StemKind::Snare => Color32::from_rgb(255, 212, 92),
-        StemKind::Toms => Color32::from_rgb(255, 150, 122),
-        StemKind::HiHat => Color32::from_rgb(190, 242, 100),
-        StemKind::Ride => Color32::from_rgb(56, 189, 248),
-        StemKind::Crash => Color32::from_rgb(165, 243, 252),
+        StemKind::Kick => Color32::from_rgb(236, 96, 70),
+        StemKind::Snare => Color32::from_rgb(240, 200, 96),
+        StemKind::Toms => Color32::from_rgb(240, 150, 120),
+        StemKind::HiHat => Color32::from_rgb(180, 220, 110),
+        StemKind::Ride => Color32::from_rgb(80, 176, 232),
+        StemKind::Crash => Color32::from_rgb(150, 216, 228),
         // Clean-up: the kept part stays in the vocal family, what was taken out goes muted.
-        StemKind::Dry => Color32::from_rgb(255, 128, 191),
-        StemKind::Reverb => Color32::from_rgb(129, 140, 248),
-        StemKind::Clean => Color32::from_rgb(110, 231, 183),
-        StemKind::Noise => Color32::from_rgb(148, 163, 184),
-    }
+        StemKind::Dry => Color32::from_rgb(240, 136, 180),
+        StemKind::Reverb => Color32::from_rgb(140, 146, 230),
+        StemKind::Clean => Color32::from_rgb(110, 210, 170),
+        StemKind::Noise => Color32::from_rgb(150, 154, 162),
+    };
+    // A little desaturation keeps every channel at the same, calmer intensity.
+    lerp_color(c, Color32::from_rgb(150, 150, 150), 0.12)
 }
 
 /// Keyboard focus ring colour (high contrast against every surface and the accent gradient).
-pub const FOCUS: Color32 = Color32::from_rgb(120, 230, 255);
+pub const FOCUS: Color32 = Color32::from_rgb(236, 236, 232);
 
 // ---- glass ---------------------------------------------------------------------------------
 
 /// Translucent card fill: the ambient background shows through a little.
-pub const GLASS: Color32 = Color32::from_rgba_premultiplied(16, 16, 28, 222);
+pub const GLASS: Color32 = CARD;
 /// Header / sidebar chrome glass (a bit denser so text stays crisp).
-pub const GLASS_CHROME: Color32 = Color32::from_rgba_premultiplied(10, 10, 18, 218);
+pub const GLASS_CHROME: Color32 = BG_PANEL;
 /// Hairline on glass edges.
-pub const GLASS_STROKE: Color32 = Color32::from_rgb(42, 42, 66);
+pub const GLASS_STROKE: Color32 = STROKE;
 /// Brighter hairline along the lit (top) edge of glass.
-pub const GLASS_EDGE: Color32 = Color32::from_rgba_premultiplied(70, 68, 104, 255);
+pub const GLASS_EDGE: Color32 = STROKE;
 
 // ---- metrics -------------------------------------------------------------------------------
 
-pub const R_CARD: u8 = 16;
-pub const R_CTRL: u8 = 10;
+pub const R_CARD: u8 = 12;
+pub const R_CTRL: u8 = 8;
 
 /// Spacing rhythm: everything snaps to a 4 px grid.
 #[allow(dead_code)] // Design tokens: not every step is used yet.
@@ -96,11 +115,11 @@ pub mod space {
     pub const XXL: f32 = 32.0;
 }
 
-/// Type scale (points). Display/H1/H2 use ExtraBold, H3 SemiBold, the rest Regular.
+/// Type scale (points). Headings use Medium (500), rare emphasis SemiBold, the rest Regular.
 #[allow(dead_code)]
 pub mod size {
-    pub const DISPLAY: f32 = 44.0;
-    pub const H1: f32 = 30.0;
+    pub const DISPLAY: f32 = 40.0;
+    pub const H1: f32 = 28.0;
     pub const H2: f32 = 19.0;
     pub const H3: f32 = 16.0;
     pub const BODY: f32 = 14.0;
@@ -144,9 +163,9 @@ pub mod motion {
     pub fn ease_in_out(t: f32) -> f32 {
         egui::emath::easing::cubic_in_out(t.clamp(0.0, 1.0))
     }
-    /// Overshoots a little, then settles: springy pop-ins.
+    /// Entrance curve for pop-ins. Plain ease-out now: nothing overshoots.
     pub fn ease_out_back(t: f32) -> f32 {
-        egui::emath::easing::back_out(t.clamp(0.0, 1.0))
+        ease_out(t)
     }
     pub fn ease_out_expo(t: f32) -> f32 {
         egui::emath::easing::exponential_out(t.clamp(0.0, 1.0))
@@ -186,9 +205,9 @@ pub mod motion {
         s.x
     }
 
-    /// Bouncy spring for UI "pops" (presses, toggles).
+    /// Spring for presses and toggles. Critically damped now: it settles without bouncing.
     pub fn bouncy(ctx: &egui::Context, id: Id, target: f32) -> f32 {
-        spring(ctx, id, target, 520.0, 20.0)
+        spring(ctx, id, target, 520.0, 46.0)
     }
     /// Smooth, barely-overshooting spring for positions (pills, highlights).
     pub fn smooth(ctx: &egui::Context, id: Id, target: f32) -> f32 {
@@ -267,10 +286,10 @@ pub mod motion {
 
 pub fn card_shadow() -> Shadow {
     Shadow {
-        offset: [0, 8],
-        blur: 28,
+        offset: [0, 4],
+        blur: 16,
         spread: 0,
-        color: Color32::from_black_alpha(110),
+        color: Color32::from_black_alpha(70),
     }
 }
 
@@ -298,10 +317,11 @@ pub fn card_frame() -> egui::Frame {
 
 // ---- fonts ---------------------------------------------------------------------------------
 
-pub const FONT_BOLD: &str = "inter-bold";
+pub const FONT_BOLD: &str = "inter-medium";
 pub const FONT_SEMI: &str = "inter-semibold";
 pub const FONT_MONO: &str = "jbmono";
 
+/// Headings: Inter Medium (500). Hierarchy comes from size and colour, not weight.
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(FONT_BOLD.into()))
 }
@@ -336,7 +356,7 @@ fn install_fonts(ctx: &egui::Context) {
     add(
         &mut fonts,
         FONT_BOLD,
-        include_bytes!("../assets/fonts/Inter-ExtraBold.ttf"),
+        include_bytes!("../assets/fonts/Inter-Medium.otf"),
     );
     add(
         &mut fonts,
@@ -403,14 +423,14 @@ pub fn install(ctx: &egui::Context) {
         v.window_shadow = card_shadow();
         v.popup_shadow = card_shadow();
         v.menu_corner_radius = CornerRadius::same(R_CTRL);
-        v.extreme_bg_color = Color32::from_rgb(12, 12, 20);
-        v.text_edit_bg_color = Some(Color32::from_rgb(12, 12, 20));
+        v.extreme_bg_color = Color32::from_rgb(14, 14, 16);
+        v.text_edit_bg_color = Some(Color32::from_rgb(14, 14, 16));
         v.faint_bg_color = CARD_HI;
         v.code_bg_color = CARD_HI;
-        v.hyperlink_color = CYAN;
+        v.hyperlink_color = TEXT;
         v.warn_fg_color = WARN;
         v.error_fg_color = BAD;
-        v.selection.bg_fill = VIOLET.gamma_multiply(0.55);
+        v.selection.bg_fill = ACCENT.gamma_multiply(0.35);
         v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
         v.slider_trailing_fill = true;
         v.handle_shape = egui::style::HandleShape::Circle;
@@ -430,16 +450,16 @@ pub fn install(ctx: &egui::Context) {
         w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
         w.inactive.corner_radius = r;
 
-        w.hovered.bg_fill = Color32::from_rgb(38, 36, 62);
-        w.hovered.weak_bg_fill = Color32::from_rgb(38, 36, 62);
-        w.hovered.bg_stroke = Stroke::new(1.0, VIOLET.gamma_multiply(0.8));
+        w.hovered.bg_fill = Color32::from_rgb(42, 42, 46);
+        w.hovered.weak_bg_fill = Color32::from_rgb(42, 42, 46);
+        w.hovered.bg_stroke = Stroke::new(1.0, STROKE_HI);
         w.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
         w.hovered.corner_radius = r;
-        w.hovered.expansion = 1.0;
+        w.hovered.expansion = 0.0;
 
-        w.active.bg_fill = Color32::from_rgb(52, 44, 90);
-        w.active.weak_bg_fill = Color32::from_rgb(52, 44, 90);
-        w.active.bg_stroke = Stroke::new(1.0, PINK);
+        w.active.bg_fill = Color32::from_rgb(50, 50, 55);
+        w.active.weak_bg_fill = Color32::from_rgb(50, 50, 55);
+        w.active.bg_stroke = Stroke::new(1.0, STROKE_HI);
         w.active.fg_stroke = Stroke::new(2.0, Color32::WHITE);
         w.active.corner_radius = r;
 
