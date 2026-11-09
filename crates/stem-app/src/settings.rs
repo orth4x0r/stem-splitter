@@ -238,6 +238,10 @@ pub struct Settings {
     pub welcomed: bool,
     /// Chunk overlap for every model run (see [`crate::quality`]).
     pub split_quality: crate::quality::SplitQuality,
+    /// Last few sample searches typed into the URL box, newest first.
+    pub recent_searches: Vec<String>,
+    /// Where those searches go (YouTube or SoundCloud).
+    pub search_site: stem_fetch::SearchSite,
 }
 
 impl Default for Settings {
@@ -266,6 +270,8 @@ impl Default for Settings {
             stem_cache_gb: 8.0,
             welcomed: false,
             split_quality: crate::quality::SplitQuality::default(),
+            recent_searches: Vec::new(),
+            search_site: stem_fetch::SearchSite::default(),
         }
     }
 }

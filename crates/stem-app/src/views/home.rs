@@ -29,7 +29,18 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         }
         url_bar(app, ui, now);
         ui.add_space(10.0);
-        platforms(ui);
+        // Words that aren't a link or a path: offer a sample search instead of the platforms.
+        let query = app.url_input.trim().to_owned();
+        match stem_fetch::classify_input(&query) {
+            stem_fetch::InputKind::Query => super::search::site_chips(app, ui, &query),
+            kind => {
+                platforms(ui);
+                if kind == stem_fetch::InputKind::Empty {
+                    super::search::recent_row(app, ui);
+                }
+            }
+        }
+        super::search::panel(app, ui);
         ui.add_space(10.0);
         section_toggle(app, ui);
         ui.add_space(if compact { 16.0 } else { 22.0 });
@@ -106,7 +117,11 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
     icons::paint(
         p,
         Rect::from_center_size(ic, vec2(18.0, 18.0)),
-        Icon::Link,
+        if stem_fetch::classify_input(&app.url_input) == stem_fetch::InputKind::Query {
+            Icon::Search
+        } else {
+            Icon::Link
+        },
         theme::lerp_color(theme::TEXT_FAINT, theme::TEXT, f),
     );
 
@@ -125,7 +140,7 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
             .id(id)
             .frame(egui::Frame::NONE)
             .hint_text(
-                egui::RichText::new("Paste a YouTube, X, SoundCloud or audio link")
+                egui::RichText::new("Paste a YouTube, X, SoundCloud or audio link, or search")
                     .color(theme::TEXT_FAINT),
             )
             .font(theme::regular(16.0))
@@ -153,14 +168,23 @@ fn url_bar(app: &mut StemApp, ui: &mut egui::Ui, now: f64) {
         );
     }
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect));
-    let go = Button::primary("Split")
-        .icon(Icon::Split)
+    let query = stem_fetch::classify_input(&app.url_input) == stem_fetch::InputKind::Query;
+    let (label, icon, tip) = if query {
+        ("Search", Icon::Search, "Search for samples (Enter)")
+    } else {
+        ("Split", Icon::Split, "Split (Enter)")
+    };
+    let go = Button::primary(label)
+        .icon(icon)
         .min_width(btn_w)
         .height(42.0)
-        .tooltip("Split (Enter)")
+        .tooltip(tip)
         .show(&mut bui)
         .clicked();
-    if go || enter {
+    if (go || enter) && query {
+        let (site, q) = (app.settings.search_site, app.url_input.clone());
+        super::search::start(app, ui.ctx(), site, &q);
+    } else if go || enter {
         app.start_from_input(now);
     }
 }
