@@ -7,6 +7,7 @@ mod export_dialog;
 mod home;
 mod kit;
 mod library;
+pub mod midi;
 mod models;
 mod models_dl;
 mod progress;
@@ -100,6 +101,7 @@ pub fn draw(app: &mut StemApp, ui: &mut egui::Ui) {
 
     export_dialog::show(app, ui.ctx());
     kit::show(app, ui.ctx());
+    midi::show(app, ui.ctx());
 
     if app.drop_hover {
         chrome::drop_overlay(&ctx);

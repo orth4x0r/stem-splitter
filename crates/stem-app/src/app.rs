@@ -162,6 +162,9 @@ pub struct StemApp {
     pub ffmpeg: FfmpegState,
     /// Size of the downloads cache in bytes; `None` = not measured yet.
     pub downloads_size: Option<u64>,
+    /// The open "→ MIDI" sheet.
+    pub midi: Option<crate::midi::MidiSheet>,
+    pub midi_prefs: crate::midi::MidiPrefs,
     /// Transform renders, kit extraction and their audition player.
     pub dsp: crate::fx::Fx,
     /// Ambient background, aurora and celebration state.
@@ -236,6 +239,8 @@ impl StemApp {
             fx: crate::effects::Fx::default(),
             splash: crate::splash::Splash::new(false),
             perf: std::env::var_os("STEM_PERF").map(|_| Perf::default()),
+            midi: None,
+            midi_prefs: Default::default(),
         };
         theme::motion::set_reduced(app.settings.reduce_motion);
         let intro = app.settings.intro && shot.as_ref().is_none_or(|s| s.scene == "splash");
@@ -1003,6 +1008,7 @@ impl eframe::App for StemApp {
 
         // Space toggles playback.
         if self.session.is_some()
+            && self.midi.is_none()
             && !ctx.egui_wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::Space))
         {

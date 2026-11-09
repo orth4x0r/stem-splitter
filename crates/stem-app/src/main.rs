@@ -17,6 +17,7 @@ mod dragout;
 mod effects;
 mod export;
 mod fx;
+mod midi;
 mod pads;
 mod paths;
 mod pipeline;

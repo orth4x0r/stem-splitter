@@ -7,6 +7,8 @@
 //! transform (Transform panel with a rendered preview), kit (drum-kit sheet),
 //! plus splash (launch intro), celebrate (completion burst) and empty (empty library).
 //! `STEM_SHOT_SIZE=WxH`, `STEM_SHOT_DELAY=secs`, `STEM_SHOT_POINTER=x,y`, `STEM_REDUCE_MOTION=1`.
+//! More scenes: midi, midi-quantize (the "→ MIDI" sheet on the bass stem; set `STEM_MIDI_MODEL=nmp.onnx`
+//! and `ORT_DYLIB_PATH` to run the real model instead of the demo stand-in).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -175,7 +177,7 @@ impl Shot {
                 });
             }
             "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
-            | "transform" | "kit" => {
+            | "transform" | "kit" | "midi" | "midi-quantize" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -249,6 +251,16 @@ impl Shot {
                     };
                     s.chop.retarget();
                 }
+                if self.scene.starts_with("midi") {
+                    if let Some(s) = &mut app.session {
+                        s.selection = None;
+                    }
+                    if self.scene == "midi-quantize" {
+                        app.midi_prefs.quantize =
+                            Some(stem_models::transcribe::QuantizeGrid::Sixteenth);
+                    }
+                    crate::views::midi::open_sheet(app, 2, false, _ctx);
+                }
                 if self.scene == "transform" || self.scene == "kit" {
                     dsp_scene(app, &self.scene);
                 } else if self.scene == "export" {
@@ -256,7 +268,7 @@ impl Shot {
                     app.settings.export_format = crate::settings::ExportFormat::Flac24;
                     app.export_all_stems();
                 } else {
-                    if !self.scene.starts_with("chop") {
+                    if !self.scene.starts_with("chop") && !self.scene.starts_with("midi") {
                         app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
                     }
                 }

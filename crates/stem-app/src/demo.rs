@@ -111,19 +111,90 @@ fn drums(l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// Bass line per bar: (beat offset in bar, length in beats, octave shift).
+const BASS_PATTERN: [(f32, f32, f32); 4] = [
+    (0.0, 1.3, 0.0),
+    (1.5, 0.45, 0.0),
+    (2.0, 1.2, 0.0),
+    (3.5, 0.4, 12.0),
+];
+
+/// A minor pentatonic vocal phrase over two bars: (beat, length, midi).
+const PHRASE: [(f32, f32, f32); 7] = [
+    (0.0, 0.9, 69.0),
+    (1.0, 0.5, 72.0),
+    (1.5, 1.4, 74.0),
+    (3.0, 0.9, 72.0),
+    (4.0, 1.8, 69.0),
+    (6.0, 0.5, 67.0),
+    (6.5, 1.3, 64.0),
+];
+
+/// The notes a stem was synthesised from, as (start s, length s, MIDI pitch, level 0..1):
+/// demo mode's stand-in for running the transcription model.
+pub fn notes(kind: StemKind) -> Vec<(f32, f32, u8, f32)> {
+    let b = beat_len();
+    let mut out = Vec::new();
+    match kind {
+        StemKind::Bass | StemKind::Instrumental => {
+            for bar in 0..BARS {
+                let root = CHORDS[bar % CHORDS.len()][0];
+                for &(off, len, oct) in &BASS_PATTERN {
+                    let vel = if oct > 0.0 { 0.62 } else { 0.85 };
+                    out.push((
+                        (bar as f32 * 4.0 + off) * b,
+                        len * b,
+                        (root + oct) as u8,
+                        vel,
+                    ));
+                }
+            }
+        }
+        StemKind::Vocals | StemKind::Dialogue | StemKind::LeadVocals => {
+            for rep in 0..(BARS / 2) {
+                if rep % 3 == 2 {
+                    continue;
+                }
+                for (j, &(off, len, n)) in PHRASE.iter().enumerate() {
+                    let vel = 0.62 + 0.06 * ((j * 5 + rep) % 5) as f32;
+                    out.push(((rep as f32 * 8.0 + off) * b, len * b, n as u8, vel));
+                }
+            }
+        }
+        StemKind::Drums | StemKind::Effects => {}
+        StemKind::Guitar | StemKind::Piano | StemKind::BackingVocals => {
+            let sixteenth = b / 4.0;
+            for s in 0..BARS * 16 {
+                if s % 3 == 2 {
+                    continue;
+                }
+                let t0 = s as f32 * sixteenth;
+                let note = chord_at(t0)[1 + (s % 3)] + 12.0;
+                out.push((t0, 0.3, note as u8, 0.55 + 0.1 * (s % 2) as f32));
+            }
+        }
+        StemKind::Other | StemKind::Music => {
+            for bar in 0..BARS {
+                for (j, &n) in CHORDS[bar % CHORDS.len()].iter().skip(1).enumerate() {
+                    out.push((
+                        bar as f32 * 4.0 * b,
+                        4.0 * b - 0.05,
+                        n as u8,
+                        0.7 - 0.06 * j as f32,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn bass(l: &mut [f32], r: &mut [f32]) {
     let sr = SR as f32;
     let b = beat_len();
-    // (beat offset in bar, length in beats, octave shift)
-    let pattern = [
-        (0.0, 1.3, 0.0),
-        (1.5, 0.45, 0.0),
-        (2.0, 1.2, 0.0),
-        (3.5, 0.4, 12.0),
-    ];
     for bar in 0..BARS {
         let root = CHORDS[bar % CHORDS.len()][0];
-        for &(off, len, oct) in &pattern {
+        for &(off, len, oct) in &BASS_PATTERN {
             let start = ((bar as f32 * 4.0 + off) * b * sr) as usize;
             let f = midi(root + oct);
             let n = (len * b * sr) as usize;
@@ -182,22 +253,12 @@ fn plucks(l: &mut [f32], r: &mut [f32], bright: f32, pan: f32) {
 fn vocals(l: &mut [f32], r: &mut [f32]) {
     let sr = SR as f32;
     let b = beat_len();
-    // A minor pentatonic phrase: (beat, length, midi)
-    let phrase = [
-        (0.0, 0.9, 69.0),
-        (1.0, 0.5, 72.0),
-        (1.5, 1.4, 74.0),
-        (3.0, 0.9, 72.0),
-        (4.0, 1.8, 69.0),
-        (6.0, 0.5, 67.0),
-        (6.5, 1.3, 64.0),
-    ];
     for rep in 0..(BARS / 2) {
         if rep % 3 == 2 {
             continue; // breathe
         }
         let base = rep as f32 * 8.0;
-        for &(off, len, n) in &phrase {
+        for &(off, len, n) in &PHRASE {
             let start = ((base + off) * b * sr) as usize;
             let f0 = midi(n);
             let cnt = (len * b * sr) as usize;
