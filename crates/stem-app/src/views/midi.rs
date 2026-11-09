@@ -966,9 +966,8 @@ fn controls(
                     } else {
                         "Show .mid"
                     };
-                    let pw = drag_handle::pill_width(ui, label) + 6.0;
+                    let pw = drag_handle::pill_width_tall(ui, label);
                     let (r, _) = ui.allocate_exact_size(vec2(pw, 38.0), Sense::hover());
-                    let r = Rect::from_center_size(r.center(), vec2(pw, 28.0));
                     let tip = if crate::dragout::NATIVE {
                         "Drag the MIDI clip straight onto a DAW track"
                     } else {

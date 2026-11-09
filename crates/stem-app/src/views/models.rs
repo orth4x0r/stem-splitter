@@ -49,15 +49,21 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     if !extras.is_empty() {
         ui.add_space(14.0);
         overline(ui, "Drum parts & vocal clean-up  ·  personal use");
-        ui.label(
-            egui::RichText::new(
-                "Run from a Drums or Vocals card in the results (Split / Clean), or as a chain \
-                 step. Most of these weights are non-commercial or carry no licence: fine for \
-                 your own beats, check before releasing.",
+        // Legend: the badge these cards carry, and what it means.
+        ui.horizontal(|ui| {
+            let w = super::refine::nc_badge_width(ui.painter(), 10.5);
+            let (r, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+            super::refine::nc_badge(ui.painter(), r.left(), r.center().y, 10.5);
+            ui.label(
+                egui::RichText::new(
+                    "Non-commercial or no stated licence: fine for your own beats, check before \
+                     releasing. Run them from a Drums or Vocals card (Split / Clean) or as a chain step.",
+                )
+                .font(theme::regular(12.5))
+                .color(theme::TEXT_DIM),
             )
-            .font(theme::regular(12.5))
-            .color(theme::TEXT_FAINT),
-        );
+            .on_hover_text(super::refine::NC_TIP);
+        });
         ui.add_space(8.0);
         cards(app, ui, &extras, None, true);
     }
@@ -180,7 +186,17 @@ fn cards(
                         p.rect_filled(seg, CornerRadius::same(2), theme::stem_color(*k));
                     }
 
-                    p.text(
+                    // The name stops short of the NC badge (long names would run under it).
+                    let name_right = if m.non_commercial {
+                        inner.right() - 28.0 - super::refine::nc_badge_width(p, 10.5)
+                    } else {
+                        inner.right() - 20.0
+                    };
+                    p.with_clip_rect(p.clip_rect().intersect(Rect::from_x_y_ranges(
+                        inner.left()..=name_right,
+                        inner.y_range(),
+                    )))
+                    .text(
                         pos2(inner.left() + 20.0, inner.top() + 46.0),
                         Align2::LEFT_CENTER,
                         m.name,

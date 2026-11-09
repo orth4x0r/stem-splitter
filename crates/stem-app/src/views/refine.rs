@@ -3,8 +3,7 @@
 //! parent, and the "NC · personal use" badge shared with the model cards.
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind, pos2,
-    vec2,
+    self, Align2, Color32, CornerRadius, Id, Order, Rect, Sense, Stroke, StrokeKind, pos2, vec2,
 };
 
 use crate::app::StemApp;
@@ -88,7 +87,7 @@ pub fn action_pill(
         .painter()
         .layout_no_wrap(label, theme::semi(11.5), Color32::WHITE);
     let w = g.size().x + 34.0;
-    let rect = Rect::from_min_size(pos2(right - w, cy - 11.0), vec2(w, 22.0));
+    let rect = Rect::from_min_size(pos2(right - w, cy - 12.0), vec2(w, 24.0));
     let id = Id::unique(("refine-pill", i));
     let clickable = matches!(state, PillState::Idle | PillState::Done(_));
     let tip = match (op, state) {
@@ -150,19 +149,19 @@ pub fn action_pill(
         paint::glow(
             p,
             rect_draw,
-            CornerRadius::same(11),
+            CornerRadius::same(12),
             theme::alpha(color, 0.25 * h),
             10.0,
         );
     }
     p.rect(
         rect_draw,
-        CornerRadius::same(11),
+        CornerRadius::same(12),
         fill,
         Stroke::new(1.0, stroke),
         StrokeKind::Inside,
     );
-    paint::glass_sheen(p, rect_draw, CornerRadius::same(11), h);
+    paint::glass_sheen(p, rect_draw, CornerRadius::same(12), h);
     let ic = Rect::from_center_size(pos2(rect_draw.left() + 13.0, cy), vec2(12.0, 12.0));
     let t = ui.input(|inp| inp.time);
     match state {
@@ -181,7 +180,7 @@ pub fn action_pill(
         g,
         text,
     );
-    paint::focus(p, &resp, rect_draw, CornerRadius::same(11));
+    paint::focus(p, &resp, rect_draw, CornerRadius::same(12));
     (rect, resp.clicked() && clickable)
 }
 
@@ -244,13 +243,15 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
     let have = app.session.as_ref().map(|s| s.kinds()).unwrap_or_default();
     let color = theme::stem_color(kind);
     let any_nc = offers.iter().any(|o| o.model.non_commercial);
-    let h = 52.0 + offers.len().max(1) as f32 * ROW_H + if any_nc { 46.0 } else { 0.0 };
+    let h = 56.0 + offers.len().max(1) as f32 * ROW_H + if any_nc { 46.0 } else { 0.0 };
     let screen = ctx.content_rect();
-    // Hangs from the pill's left edge, over the waveform lanes.
-    let mut pos = pos2(anchor.left() - 14.0, anchor.bottom() + 8.0);
-    if pos.y + h > screen.bottom() - 12.0 {
-        pos.y = anchor.top() - 8.0 - h;
-    }
+    // Opens to the right of the pill, over the waveform lanes, with its header level with the
+    // pill (so it never half-covers the card's other controls).
+    let mut pos = pos2(anchor.right() + 12.0, anchor.center().y - 22.0);
+    pos.y = pos.y.clamp(
+        screen.top() + 12.0,
+        (screen.bottom() - 12.0 - h).max(screen.top() + 12.0),
+    );
     pos.x = pos
         .x
         .clamp(screen.left() + 12.0, screen.right() - MENU_W - 12.0);
@@ -259,11 +260,13 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
     let mut close = false;
     let area = egui::Area::new(menu_id().with("area"))
         .order(Order::Foreground)
-        .fixed_pos(pos + vec2(0.0, -8.0 * (1.0 - enter)))
+        .fixed_pos(pos + vec2(-8.0 * (1.0 - enter), 0.0))
         .show(ctx, |ui| {
             ui.set_opacity(enter.clamp(0.0, 1.0));
             let (rect, _) = ui.allocate_exact_size(vec2(MENU_W, h), Sense::click());
             let p = ui.painter();
+            // Solid backing: the menu floats over busy waveforms and must read cleanly.
+            p.rect_filled(rect, CornerRadius::same(16), theme::BG_PANEL);
             paint::glass(
                 p,
                 rect,
@@ -271,35 +274,57 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
                 Some(theme::alpha(color, 0.16)),
                 0.0,
             );
-            // Little caret towards the pill.
-            let cx = (anchor.center().x).clamp(rect.left() + 24.0, rect.right() - 24.0);
-            if pos.y > anchor.bottom() {
+            // Little caret towards the pill, in the menu's own fill and hairline.
+            let cy = anchor
+                .center()
+                .y
+                .clamp(rect.top() + 18.0, rect.bottom() - 18.0);
+            if rect.left() > anchor.right() {
+                let (base_x, tip_x) = (rect.left() + 1.0, rect.left() - 6.5);
+                let fill = theme::lerp_color(theme::BG_PANEL, theme::GLASS, 0.5);
                 p.add(egui::Shape::convex_polygon(
                     vec![
-                        pos2(cx - 7.0, rect.top() + 0.5),
-                        pos2(cx + 7.0, rect.top() + 0.5),
-                        pos2(cx, rect.top() - 6.5),
+                        pos2(base_x, cy - 7.0),
+                        pos2(tip_x, cy),
+                        pos2(base_x, cy + 7.0),
                     ],
-                    theme::GLASS,
+                    fill,
                     Stroke::NONE,
                 ));
+                let edge = Stroke::new(1.0, theme::GLASS_STROKE);
+                p.line_segment([pos2(base_x, cy - 7.0), pos2(tip_x, cy)], edge);
+                p.line_segment([pos2(base_x, cy + 7.0), pos2(tip_x, cy)], edge);
             }
+            icons::paint(
+                p,
+                Rect::from_center_size(
+                    pos2(rect.left() + 24.0, rect.top() + 22.0),
+                    vec2(13.0, 13.0),
+                ),
+                glyph(op),
+                color,
+            );
             p.text(
-                pos2(rect.left() + 18.0, rect.top() + 22.0),
+                pos2(rect.left() + 38.0, rect.top() + 22.0),
                 Align2::LEFT_CENTER,
                 match op {
-                    RefineOp::DrumParts => "SPLIT DRUMS INTO PARTS",
-                    RefineOp::CleanUp => "CLEAN UP THE VOCAL",
+                    RefineOp::DrumParts => "Split drums into parts",
+                    RefineOp::CleanUp => "Clean up the vocal",
                 },
-                theme::semi(10.5),
-                theme::TEXT_FAINT,
+                theme::semi(13.0),
+                theme::TEXT,
             );
             p.text(
                 pos2(rect.right() - 18.0, rect.top() + 22.0),
                 Align2::RIGHT_CENTER,
                 format!("on {}", kind.label().to_lowercase()),
-                theme::mono(11.0),
-                color,
+                theme::regular(12.0),
+                theme::TEXT_DIM,
+            );
+            p.hline(
+                rect.left() + 14.0..=rect.right() - 14.0,
+                rect.top() + 40.0,
+                Stroke::new(1.0, theme::GLASS_STROKE),
             );
             if offers.is_empty() {
                 p.text(
@@ -312,7 +337,7 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
             }
             for (k, o) in offers.iter().enumerate() {
                 let row = Rect::from_min_size(
-                    pos2(rect.left() + 8.0, rect.top() + 40.0 + k as f32 * ROW_H),
+                    pos2(rect.left() + 8.0, rect.top() + 46.0 + k as f32 * ROW_H),
                     vec2(MENU_W - 16.0, ROW_H - 4.0),
                 );
                 let adds = o.model.stems.iter().any(|s| !have.contains(s));
@@ -370,14 +395,14 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
                 }
                 // Status on the right.
                 let (status, sc) = if o.blocked.is_some() {
-                    ("export needed".to_owned(), theme::TEXT_FAINT)
+                    ("Export needed".to_owned(), theme::TEXT_FAINT)
                 } else if !adds {
-                    ("added".to_owned(), theme::TEXT_FAINT)
+                    ("Added".to_owned(), theme::TEXT_FAINT)
                 } else if o.downloaded {
-                    ("ready".to_owned(), theme::GOOD)
+                    ("Ready".to_owned(), theme::GOOD)
                 } else {
                     (
-                        format!("↓ {}", human_bytes(o.model.size_bytes)),
+                        format!("Download · {}", human_bytes(o.model.size_bytes)),
                         theme::CYAN,
                     )
                 };
@@ -385,7 +410,7 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
                     pos2(row.right() - 12.0, row.top() + 17.0),
                     Align2::RIGHT_CENTER,
                     status,
-                    theme::mono(11.0),
+                    theme::regular(12.0),
                     sc,
                 );
                 if resp.clicked() && usable {
@@ -434,8 +459,10 @@ pub fn menu(app: &mut StemApp, ctx: &egui::Context) {
     }
 }
 
-/// While a split runs on this card: a glass strip along the bottom of its waveform lane with
-/// the step, a progress bar and a cancel button.
+/// While a split runs on this card: the waveform shows how far the model has got (done part
+/// in full colour, the rest dimmed, a playhead-like marker at the front), and a glass strip
+/// along the lane's bottom says what runs, on what, how long it has taken and roughly how
+/// long is left, with a cancel button.
 pub fn progress_strip(app: &mut StemApp, ui: &mut egui::Ui, lane: Rect, i: usize, color: Color32) {
     let Some(job) = app.refine.as_mut().filter(|j| j.track == i) else {
         return;
@@ -451,72 +478,117 @@ pub fn progress_strip(app: &mut StemApp, ui: &mut egui::Ui, lane: Rect, i: usize
         0.0,
         motion::SLOW,
     ));
-    let h = 34.0;
+    let frac = job.frac.map(|_| job.shown.clamp(0.0, 1.0));
+    let p = ui.painter();
+    // The waveform as a progress track: the part still to do sits under a dark veil.
+    let front = frac.map(|f| lane.left() + lane.width() * f);
+    let todo = Rect::from_min_max(pos2(front.unwrap_or(lane.left()), lane.top()), lane.max);
+    p.rect_filled(
+        todo,
+        CornerRadius::same(10),
+        Color32::from_black_alpha((120.0 * enter) as u8),
+    );
+    if let Some(x) = front {
+        p.vline(
+            x,
+            lane.top() + 2.0..=lane.bottom() - 2.0,
+            Stroke::new(1.5, theme::alpha(color, 0.9 * enter)),
+        );
+    }
+
+    let h = 30.0;
     let strip = Rect::from_min_size(
         pos2(
             lane.left() + 8.0,
-            lane.bottom() - h - 6.0 + 10.0 * (1.0 - enter),
+            lane.bottom() - h - 6.0 + 8.0 * (1.0 - enter),
         ),
         vec2(lane.width() - 16.0, h),
     );
-    let p = ui.painter();
-    // Dim the waveform under it a little, so the strip reads.
-    p.rect_filled(
-        lane,
-        CornerRadius::same(10),
-        Color32::from_black_alpha((70.0 * enter) as u8),
-    );
-    paint::glass(
-        p,
+    p.rect(
         strip,
-        CornerRadius::same(12),
-        Some(theme::alpha(color, 0.18 * enter)),
-        0.0,
+        CornerRadius::same(10),
+        theme::alpha(theme::BG_PANEL, 0.92 * enter),
+        Stroke::new(1.0, theme::alpha(color, 0.45 * enter)),
+        StrokeKind::Inside,
     );
-    progress::ring(
-        p,
-        pos2(strip.left() + 18.0, strip.center().y),
-        7.0,
-        2.2,
-        job.frac.map(|_| job.shown),
-        t,
-    );
+    let cy = strip.center().y - 1.0;
+    progress::ring(p, pos2(strip.left() + 16.0, cy), 6.5, 2.0, frac, t);
     let elapsed = (t - job.started).max(0.0);
-    let pct = job
-        .frac
-        .map_or(String::new(), |_| format!("  {:.0}%", job.shown * 100.0));
-    p.text(
-        pos2(strip.left() + 34.0, strip.center().y),
-        Align2::LEFT_CENTER,
+    // Left: what runs.
+    let title = p.layout_no_wrap(
         format!("{} · {}", job.op.doing(), job.model_name),
         theme::semi(12.5),
         theme::TEXT,
     );
-    let right_text = format!("{}{pct}", fmt_elapsed(elapsed));
-    let detail = if job.detail.is_empty() {
-        String::new()
+    let title_w = title.size().x;
+    p.galley(
+        pos2(strip.left() + 30.0, cy - title.size().y / 2.0),
+        title,
+        theme::TEXT,
+    );
+    // Right: detail · elapsed · ~left · percent, mono so the numbers don't jitter.
+    let mut right = Vec::new();
+    if !job.detail.is_empty() {
+        right.push(job.detail.clone());
+    }
+    right.push(fmt_elapsed(elapsed));
+    if let Some(f) = frac
+        && f > 0.04
+    {
+        let left = elapsed / f as f64 - elapsed;
+        right.push(format!("~{} left", fmt_elapsed(left)));
+    }
+    let text_right = strip.right() - 40.0;
+    let pct = frac.map(|f| format!("{:>3.0}%", f * 100.0));
+    let pct_w = if let Some(pct) = pct {
+        let g = p.layout_no_wrap(pct, theme::mono(12.5), theme::TEXT);
+        let w = g.size().x;
+        p.galley(pos2(text_right - w, cy - g.size().y / 2.0), g, theme::TEXT);
+        w + 12.0
     } else {
-        format!("{}   ", job.detail)
+        0.0
     };
-    p.text(
-        pos2(strip.right() - 44.0, strip.center().y),
-        Align2::RIGHT_CENTER,
-        format!("{detail}{right_text}"),
-        theme::mono(11.0),
-        theme::TEXT_DIM,
-    );
-    // Thin bar along the strip's bottom edge.
+    // Drop detail first when the lane is narrow.
+    let room = text_right - pct_w - (strip.left() + 42.0 + title_w);
+    let mut info = right.join("  ·  ");
+    let mut g = p.layout_no_wrap(info.clone(), theme::mono(11.0), theme::TEXT_DIM);
+    while g.size().x > room && right.len() > 1 {
+        right.remove(0);
+        info = right.join("  ·  ");
+        g = p.layout_no_wrap(info.clone(), theme::mono(11.0), theme::TEXT_DIM);
+    }
+    if g.size().x <= room {
+        p.galley(
+            pos2(text_right - pct_w - g.size().x, cy - g.size().y / 2.0),
+            g,
+            theme::TEXT_DIM,
+        );
+    }
+    // Bar along the strip's bottom edge, in the stem's colour.
     let bar = Rect::from_min_max(
-        pos2(strip.left() + 12.0, strip.bottom() - 4.0),
-        pos2(strip.right() - 12.0, strip.bottom() - 2.0),
+        pos2(strip.left() + 10.0, strip.bottom() - 4.0),
+        pos2(strip.right() - 10.0, strip.bottom() - 2.0),
     );
-    progress::bar(p, bar, job.frac.map(|_| job.shown), t);
-    let cr = Rect::from_center_size(
-        pos2(strip.right() - 20.0, strip.center().y),
-        vec2(24.0, 24.0),
-    );
+    p.rect_filled(bar, CornerRadius::same(1), Color32::from_white_alpha(14));
+    match frac {
+        Some(f) => {
+            let fill = Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height()));
+            p.rect_filled(fill, CornerRadius::same(1), color);
+        }
+        None => {
+            // Indeterminate: a short segment sweeping across.
+            let w = bar.width() * 0.25;
+            let x = bar.left() - w + (bar.width() + w) * ((t * 0.6) % 1.0) as f32;
+            let seg = Rect::from_min_max(
+                pos2(x.max(bar.left()), bar.top()),
+                pos2((x + w).min(bar.right()), bar.bottom()),
+            );
+            p.rect_filled(seg, CornerRadius::same(1), color);
+        }
+    }
+    let cr = Rect::from_center_size(pos2(strip.right() - 18.0, cy + 1.0), vec2(22.0, 22.0));
     let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cr));
-    if buttons::icon_button(&mut cu, Icon::Close, 24.0, false, theme::BAD, "Cancel").clicked() {
+    if buttons::icon_button(&mut cu, Icon::Close, 22.0, false, theme::BAD, "Cancel").clicked() {
         app.cancel_refine();
     }
     ui.ctx().request_repaint();
@@ -529,7 +601,9 @@ fn fmt_elapsed(s: f64) -> String {
 
 /// Tree line from a parent card down to a sub-stem card: a vertical run at `x` from `top`
 /// (the gap under the card above) to `mid`, a rounded elbow, and a stub to the card's left
-/// edge `to_x`. `more` continues the line past this card for the next sibling.
+/// edge `to_x`. `more` continues the line past this card for the next sibling. `draw` (0..1)
+/// draws it in from the top (the entrance); the node at the card appears once it arrives.
+#[allow(clippy::too_many_arguments)]
 pub fn tree_line(
     p: &egui::Painter,
     x: f32,
@@ -538,20 +612,41 @@ pub fn tree_line(
     to_x: f32,
     more: Option<f32>,
     color: Color32,
+    draw: f32,
 ) {
-    let stroke = Stroke::new(1.5, theme::alpha(color, 0.55));
-    let r = 8.0;
-    p.line_segment([pos2(x, top), pos2(x, mid - r)], stroke);
-    let elbow: Vec<Pos2> = (0..=8)
-        .map(|k| {
-            let a = std::f32::consts::PI - k as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
-            pos2(x + r + r * a.cos(), mid - r + r * a.sin())
-        })
-        .collect();
-    p.add(egui::Shape::line(elbow, stroke));
-    p.line_segment([pos2(x + r, mid), pos2(to_x, mid)], stroke);
-    p.circle_filled(pos2(to_x, mid), 2.5, theme::alpha(color, 0.9));
+    if draw <= 0.0 {
+        return;
+    }
+    let stroke = Stroke::new(1.5, theme::alpha(color, 0.7));
+    let r = 9.0;
+    // The whole run as one polyline: trunk, elbow, stub.
+    let mut pts = vec![pos2(x, top), pos2(x, mid - r)];
+    pts.extend((1..=10).map(|k| {
+        let a = std::f32::consts::PI - k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+        pos2(x + r + r * a.cos(), mid - r + r * a.sin())
+    }));
+    pts.push(pos2(to_x, mid));
+    let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    let mut left = total * draw.clamp(0.0, 1.0);
+    let mut drawn = vec![pts[0]];
+    for w in pts.windows(2) {
+        let len = (w[1] - w[0]).length();
+        if left >= len {
+            drawn.push(w[1]);
+            left -= len;
+        } else {
+            drawn.push(w[0] + (w[1] - w[0]) * (left / len.max(1e-3)));
+            break;
+        }
+    }
+    p.add(egui::Shape::line(drawn, stroke));
+    if draw >= 1.0 {
+        let at = pos2(to_x, mid);
+        p.circle_filled(at, 3.0, color);
+        p.circle_stroke(at, 3.0, Stroke::new(1.0, theme::BG));
+    }
     if let Some(bottom) = more {
-        p.line_segment([pos2(x, mid - r), pos2(x, bottom)], stroke);
+        let end = mid - r + (bottom - (mid - r)) * draw.clamp(0.0, 1.0);
+        p.line_segment([pos2(x, mid - r), pos2(x, end)], stroke);
     }
 }

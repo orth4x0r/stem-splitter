@@ -237,9 +237,8 @@ pub fn show(app: &mut StemApp, ctx: &egui::Context) {
                     }
                     if ready && n_checked > 0 {
                         let label = if crate::dragout::NATIVE { "Drag kit folder" } else { "Show kit folder" };
-                        let w = drag_handle::pill_width(ui, label) + 6.0;
-                        let (r, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
-                        let pill = drag_handle::pill_rect(r.right(), r.center().y, w).expand2(vec2(0.0, 4.0));
+                        let w = drag_handle::pill_width_tall(ui, label);
+                        let (pill, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
                         let tip = if crate::dragout::NATIVE {
                             "Drag the kit folder into your DAW or sampler (written first)"
                         } else {

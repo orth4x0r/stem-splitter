@@ -767,9 +767,8 @@ fn export_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Intent
         } else {
             "Show Chops folder"
         };
-        let w = drag_handle::pill_width(ui, label_txt) + 8.0;
-        let (r, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
-        let pill = Rect::from_center_size(r.center(), vec2(w, 30.0));
+        let w = drag_handle::pill_width_tall(ui, label_txt);
+        let (pill, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
         let tip = if crate::dragout::NATIVE {
             "Writes the chops, then drag the whole folder into your DAW or sampler"
         } else {
