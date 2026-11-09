@@ -18,7 +18,6 @@ use super::chain::{self, Runner};
 use super::{AppEvent, Notifier, StemOut};
 use crate::backend::guard;
 use crate::paths::AppPaths;
-use crate::waveform::{BUCKETS, Envelope};
 
 /// What a refine run does to its stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,26 +166,19 @@ fn run(
 /// the name re-opening from the library looks for.
 fn write(req: &RefineRequest, stems: Vec<(StemKind, AudioBuffer)>) -> Result<Vec<StemOut>, String> {
     std::fs::create_dir_all(&req.out_dir).map_err(|e| format!("{}: {e}", req.out_dir.display()))?;
-    let mut out = Vec::new();
-    for (kind, audio) in stems {
-        if req.existing.contains(&kind) || kind == req.parent {
-            continue;
-        }
-        let path = req
-            .out_dir
-            .join(format!("{}.wav", kind.label().to_lowercase()));
-        stem_audio::write_wav(&path, &audio, req.wav).map_err(|e| e.to_string())?;
-        if !req.meta.is_empty() {
-            let _ = stem_audio::wavmeta::apply_to_file(&path, &req.meta);
-        }
-        let env = Envelope::from_buffer(&audio, BUCKETS);
-        out.push(StemOut {
-            kind,
-            audio,
-            path,
-            env,
-        });
-    }
+    let stems: Vec<_> = stems
+        .into_iter()
+        .filter(|(kind, _)| !req.existing.contains(kind) && *kind != req.parent)
+        .collect();
+    let out = super::write_parallel(
+        stems,
+        |kind| {
+            req.out_dir
+                .join(format!("{}.wav", kind.label().to_lowercase()))
+        },
+        req.wav,
+        &req.meta,
+    )?;
     if out.is_empty() {
         return Err("the model gave no new stems".into());
     }

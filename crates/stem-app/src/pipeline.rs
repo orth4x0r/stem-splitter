@@ -353,37 +353,30 @@ fn write_stems(
     stems: Vec<(StemKind, AudioBuffer)>,
     send: Emit<'_>,
 ) -> Result<JobOutput, String> {
-    send(JobEvent::Stage(Stage::Writing, "Saving WAVs".into()));
-    let dir_name = crate::section::dir_name(title, req.range);
-    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(&dir_name)));
-    std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-    let n = stems.len().max(1);
-    let mut out = Vec::new();
-    for (i, (kind, audio)) in stems.into_iter().enumerate() {
-        let path = out_dir.join(format!("{}.wav", kind.label().to_lowercase()));
-        stem_audio::write_wav(&path, &audio, req.wav).map_err(|e| e.to_string())?;
-        let env = Envelope::from_buffer(&audio, BUCKETS);
-        out.push(StemOut {
-            kind,
-            audio,
-            path,
-            env,
-        });
-        send(JobEvent::Progress(Some((i + 1) as f32 / n as f32)));
-    }
     send(JobEvent::Stage(
         Stage::Writing,
         "Detecting tempo & key".into(),
     ));
+    let dir_name = crate::section::dir_name(title, req.range);
+    let out_dir = unique_dir(&req.output_root.join(sanitize_file_name(&dir_name)));
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    // Tempo / key first (it only needs the audio), so each WAV is written once with its
+    // metadata, and all of them at the same time.
     send(JobEvent::Progress(None));
-    let analysis = analyze(&out);
+    let refs: Vec<_> = stems.iter().map(|(k, a)| (*k, a)).collect();
+    let analysis = guard("analysis", || crate::analysis::analyze_stems(&refs))
+        .ok()
+        .flatten();
+    drop(refs);
     // Tempo / key in the WAVs themselves, so a stem dragged into a DAW lands in time.
     let meta = crate::export::wav_meta(analysis.as_ref(), false, None);
-    if !meta.is_empty() {
-        for s in &out {
-            let _ = stem_audio::wavmeta::apply_to_file(&s.path, &meta);
-        }
-    }
+    send(JobEvent::Stage(Stage::Writing, "Saving WAVs".into()));
+    let out = write_parallel(
+        stems,
+        |kind| out_dir.join(format!("{}.wav", kind.label().to_lowercase())),
+        req.wav,
+        &meta,
+    )?;
     Ok(JobOutput {
         title: title.to_owned(),
         out_dir,
@@ -399,6 +392,39 @@ fn write_stems(
 }
 
 /// `dir`, or `dir (2)`, `dir (3)`... if it already has files in it.
+/// Write each stem (with `meta`) and build its waveform envelope, one thread per stem: the
+/// WAV encoder is single-threaded and a full song's stems are tens of megabytes each.
+pub(crate) fn write_parallel(
+    stems: Vec<(StemKind, AudioBuffer)>,
+    path_of: impl Fn(StemKind) -> PathBuf + Sync,
+    wav: WavFormat,
+    meta: &stem_audio::wavmeta::WavMeta,
+) -> Result<Vec<StemOut>, String> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = stems
+            .into_iter()
+            .map(|(kind, audio)| {
+                let path = path_of(kind);
+                s.spawn(move || -> Result<StemOut, String> {
+                    stem_audio::wavmeta::write_wav_meta(&path, &audio, wav, meta)
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    let env = Envelope::from_buffer(&audio, BUCKETS);
+                    Ok(StemOut {
+                        kind,
+                        audio,
+                        path,
+                        env,
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().map_err(|_| "writing a stem crashed".to_owned())?)
+            .collect()
+    })
+}
+
 fn unique_dir(dir: &Path) -> PathBuf {
     let busy = |p: &Path| p.read_dir().is_ok_and(|mut d| d.next().is_some());
     if !busy(dir) {
@@ -661,26 +687,39 @@ pub fn spawn_load_history(
         let send = |ev| n.send(AppEvent::Job(id, ev));
         send(JobEvent::Stage(Stage::Decoding, "Loading stems".into()));
         let result = guard("load stems", || -> Result<JobOutput, String> {
-            let mut stems = Vec::new();
-            for (i, kind) in kinds.iter().enumerate() {
-                let path = out_dir.join(format!("{}.wav", kind.label().to_lowercase()));
-                let audio = if demo && !path.exists() {
-                    crate::demo::stem(*kind)
-                } else {
-                    stem_audio::decode_file(&path)
-                        .map_err(|e| format!("{}: {e}", path.display()))?
-                };
-                let env = Envelope::from_buffer(&audio, BUCKETS);
-                stems.push(StemOut {
-                    kind: *kind,
-                    audio,
-                    path,
-                    env,
-                });
-                send(JobEvent::Progress(Some(
-                    (i + 1) as f32 / kinds.len().max(1) as f32,
-                )));
-            }
+            // One thread per stem: decoding and the envelope are single-threaded.
+            let done = std::sync::atomic::AtomicUsize::new(0);
+            let total = kinds.len().max(1) as f32;
+            let stems = std::thread::scope(|s| {
+                let handles: Vec<_> = kinds
+                    .iter()
+                    .map(|&kind| {
+                        let (out_dir, done, send) = (&out_dir, &done, &send);
+                        s.spawn(move || -> Result<StemOut, String> {
+                            let path = out_dir.join(format!("{}.wav", kind.label().to_lowercase()));
+                            let audio = if demo && !path.exists() {
+                                crate::demo::stem(kind)
+                            } else {
+                                stem_audio::decode_file(&path)
+                                    .map_err(|e| format!("{}: {e}", path.display()))?
+                            };
+                            let env = Envelope::from_buffer(&audio, BUCKETS);
+                            let k = done.fetch_add(1, Ordering::Relaxed) + 1;
+                            send(JobEvent::Progress(Some(k as f32 / total)));
+                            Ok(StemOut {
+                                kind,
+                                audio,
+                                path,
+                                env,
+                            })
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().map_err(|_| "loading a stem crashed".to_owned())?)
+                    .collect::<Result<Vec<_>, String>>()
+            })?;
             let analysis = analyze(&stems);
             Ok(JobOutput {
                 title: title.clone(),
