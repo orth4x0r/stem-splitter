@@ -15,6 +15,7 @@ use crate::settings::Preset;
 use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::icons::{self, Icon};
+use crate::widgets::sheet::Sheet;
 use crate::widgets::toast::elide;
 use crate::widgets::{overline, paint};
 
@@ -804,345 +805,347 @@ pub fn editor(app: &mut StemApp, ctx: &egui::Context) {
     let mut close = false;
     let mut save = false;
     let mut delete = false;
-    let resp = egui::Modal::new(Id::unique("preset-editor"))
-        .frame(theme::card_frame().inner_margin(egui::Margin::same(24)))
-        .backdrop_color(Color32::from_black_alpha(150))
-        .show(ctx, |ui| {
-            ui.set_width(640.0);
+    let mut sheet = Sheet::begin(ctx, Id::unique("preset-editor"));
+    let resp = sheet.show(ctx, theme::VIOLET, 24, |ui| {
+        ui.set_width(640.0);
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+            crate::widgets::icon_badge(ui.painter(), r, theme::VIOLET, Icon::Models);
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(if ed.existing {
+                    "Edit preset"
+                } else {
+                    "New preset"
+                })
+                .font(theme::bold(22.0))
+                .color(theme::TEXT),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (b, c) = kind_badge(&ed.preset.chain);
+                let (r, _) = ui.allocate_exact_size(vec2(80.0, 20.0), Sense::hover());
+                badge(ui.painter(), pos2(r.right(), r.top()), b, c);
+            });
+        });
+        ui.add_space(10.0);
+        let field = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(if ed.existing {
-                        "Edit preset"
-                    } else {
-                        "New preset"
-                    })
-                    .font(theme::bold(22.0))
-                    .color(theme::TEXT),
+                let (r, _) = ui.allocate_exact_size(vec2(96.0, 32.0), Sense::hover());
+                ui.painter().text(
+                    pos2(r.left(), r.center().y),
+                    Align2::LEFT_CENTER,
+                    label,
+                    theme::regular(13.5),
+                    theme::TEXT_DIM,
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (b, c) = kind_badge(&ed.preset.chain);
-                    let (r, _) = ui.allocate_exact_size(vec2(80.0, 20.0), Sense::hover());
-                    badge(ui.painter(), pos2(r.right(), r.top()), b, c);
-                });
+                add(ui);
             });
-            ui.add_space(10.0);
-            let field = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(96.0, 32.0), Sense::hover());
-                    ui.painter().text(
-                        pos2(r.left(), r.center().y),
-                        Align2::LEFT_CENTER,
-                        label,
-                        theme::regular(13.5),
-                        theme::TEXT_DIM,
-                    );
-                    add(ui);
-                });
-            };
-            field(ui, "Name", &mut |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut ed.preset.name)
-                        .font(theme::semi(14.0))
-                        .desired_width(ui.available_width()),
-                );
-            });
-            field(ui, "Notes", &mut |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut ed.preset.description)
-                        .hint_text("What it's for (optional)")
-                        .font(theme::regular(13.0))
-                        .desired_width(ui.available_width()),
-                );
-            });
-            ui.add_space(12.0);
-            overline(ui, "Steps");
-            ui.add_space(4.0);
+        };
+        field(ui, "Name", &mut |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut ed.preset.name)
+                    .font(theme::semi(14.0))
+                    .desired_width(ui.available_width()),
+            );
+        });
+        field(ui, "Notes", &mut |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut ed.preset.description)
+                    .hint_text("What it's for (optional)")
+                    .font(theme::regular(13.0))
+                    .desired_width(ui.available_width()),
+            );
+        });
+        ui.add_space(12.0);
+        overline(ui, "Steps");
+        ui.add_space(4.0);
 
-            let mut remove_step = None;
-            let n_steps = ed.preset.chain.steps.len();
-            egui::ScrollArea::vertical()
-                .id_salt("preset-steps")
-                .max_height(430.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for i in 0..n_steps {
-                        let inputs = produced_before(app, &ed.preset.chain, i);
-                        let step = &mut ed.preset.chain.steps[i];
-                        let color = if step.is_ensemble() {
-                            theme::CYAN
-                        } else {
-                            [theme::VIOLET, theme::PINK, theme::CYAN][i % 3]
-                        };
-                        let frame = egui::Frame::new()
-                            .fill(theme::alpha(color, 0.06))
-                            .stroke(Stroke::new(1.0, theme::alpha(color, 0.35)))
-                            .corner_radius(CornerRadius::same(14))
-                            .inner_margin(egui::Margin::symmetric(14, 10));
-                        let shown = frame.show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                let (r, _) =
-                                    ui.allocate_exact_size(vec2(24.0, 32.0), Sense::hover());
-                                let c = r.center();
-                                paint::glow_circle(
-                                    ui.painter(),
-                                    c,
-                                    6.0,
-                                    theme::alpha(color, 0.4),
-                                    8.0,
-                                );
-                                ui.painter().circle_filled(c, 11.0, color);
-                                ui.painter().text(
-                                    c,
-                                    Align2::CENTER_CENTER,
-                                    format!("{}", i + 1),
-                                    theme::bold(12.0),
-                                    Color32::WHITE,
-                                );
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new("Input")
-                                        .font(theme::regular(12.5))
-                                        .color(theme::TEXT_FAINT),
-                                );
-                                egui::ComboBox::from_id_salt(("step-input", i))
-                                    .selected_text(step.input.label())
-                                    .width(140.0)
-                                    .show_ui(ui, |ui| {
+        let mut remove_step = None;
+        let n_steps = ed.preset.chain.steps.len();
+        egui::ScrollArea::vertical()
+            .id_salt("preset-steps")
+            // Short windows: the step list scrolls so the sheet keeps its header and buttons.
+            .max_height((ui.ctx().content_rect().height() - 480.0).clamp(140.0, 430.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for i in 0..n_steps {
+                    let inputs = produced_before(app, &ed.preset.chain, i);
+                    let step = &mut ed.preset.chain.steps[i];
+                    let color = if step.is_ensemble() {
+                        theme::CYAN
+                    } else {
+                        [theme::VIOLET, theme::PINK, theme::CYAN][i % 3]
+                    };
+                    let frame = egui::Frame::new()
+                        .fill(theme::alpha(color, 0.06))
+                        .stroke(Stroke::new(1.0, theme::alpha(color, 0.35)))
+                        .corner_radius(CornerRadius::same(14))
+                        .inner_margin(egui::Margin::symmetric(14, 10));
+                    let shown = frame.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(vec2(24.0, 32.0), Sense::hover());
+                            let c = r.center();
+                            paint::glow_circle(ui.painter(), c, 6.0, theme::alpha(color, 0.4), 8.0);
+                            ui.painter().circle_filled(c, 11.0, color);
+                            ui.painter().text(
+                                c,
+                                Align2::CENTER_CENTER,
+                                format!("{}", i + 1),
+                                theme::bold(12.0),
+                                Color32::WHITE,
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("Input")
+                                    .font(theme::regular(12.5))
+                                    .color(theme::TEXT_FAINT),
+                            );
+                            egui::ComboBox::from_id_salt(("step-input", i))
+                                .selected_text(step.input.label())
+                                .width(140.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut step.input,
+                                        StepInput::Mix,
+                                        "Full mix",
+                                    );
+                                    for k in &inputs {
                                         ui.selectable_value(
                                             &mut step.input,
-                                            StepInput::Mix,
-                                            "Full mix",
+                                            StepInput::Stem(*k),
+                                            k.label(),
                                         );
-                                        for k in &inputs {
-                                            ui.selectable_value(
-                                                &mut step.input,
-                                                StepInput::Stem(*k),
-                                                k.label(),
-                                            );
-                                        }
-                                    });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if n_steps > 1
-                                            && buttons::icon_button(
-                                                ui,
-                                                Icon::Close,
-                                                28.0,
-                                                false,
-                                                theme::BAD,
-                                                "Remove step",
-                                            )
-                                            .clicked()
-                                        {
-                                            remove_step = Some(i);
-                                        }
-                                    },
-                                );
-                            });
-                            let mut remove_model = None;
-                            let n_models = step.models.len();
-                            for (mi, m) in step.models.iter_mut().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(30.0);
-                                    let (r, _) =
-                                        ui.allocate_exact_size(vec2(40.0, 30.0), Sense::hover());
-                                    ui.painter().text(
-                                        pos2(r.left(), r.center().y),
-                                        Align2::LEFT_CENTER,
-                                        if mi == 0 { "Model" } else { "+" },
-                                        theme::regular(12.5),
-                                        theme::TEXT_FAINT,
-                                    );
-                                    model_combo(ui, ("step-model", i, mi), &models, m);
-                                    if let Some(info) = models.iter().find(|x| x.id == m.as_str()) {
-                                        for k in &info.stems {
-                                            let (r, _) = ui.allocate_exact_size(
-                                                vec2(8.0, 30.0),
-                                                Sense::hover(),
-                                            );
-                                            ui.painter().circle_filled(
-                                                r.center(),
-                                                3.0,
-                                                theme::stem_color(*k),
-                                            );
-                                        }
                                     }
-                                    if n_models > 1
+                                });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if n_steps > 1
                                         && buttons::icon_button(
                                             ui,
                                             Icon::Close,
-                                            24.0,
+                                            28.0,
                                             false,
                                             theme::BAD,
-                                            "Remove from ensemble",
+                                            "Remove step",
                                         )
                                         .clicked()
                                     {
-                                        remove_model = Some(mi);
+                                        remove_step = Some(i);
                                     }
-                                });
-                            }
-                            if let Some(mi) = remove_model {
-                                step.models.remove(mi);
-                            }
+                                },
+                            );
+                        });
+                        let mut remove_model = None;
+                        let n_models = step.models.len();
+                        for (mi, m) in step.models.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
-                                ui.add_space(70.0);
-                                if Button::ghost("Ensemble model")
-                                    .icon(Icon::Plus)
-                                    .height(28.0)
-                                    .tooltip(
-                                        "Run another model on the same input and combine the stems \
-                                 both make (slower, a little cleaner)",
+                                ui.add_space(30.0);
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(40.0, 30.0), Sense::hover());
+                                ui.painter().text(
+                                    pos2(r.left(), r.center().y),
+                                    Align2::LEFT_CENTER,
+                                    if mi == 0 { "Model" } else { "+" },
+                                    theme::regular(12.5),
+                                    theme::TEXT_FAINT,
+                                );
+                                model_combo(ui, ("step-model", i, mi), &models, m);
+                                if let Some(info) = models.iter().find(|x| x.id == m.as_str()) {
+                                    for k in &info.stems {
+                                        let (r, _) =
+                                            ui.allocate_exact_size(vec2(8.0, 30.0), Sense::hover());
+                                        ui.painter().circle_filled(
+                                            r.center(),
+                                            3.0,
+                                            theme::stem_color(*k),
+                                        );
+                                    }
+                                }
+                                if n_models > 1
+                                    && buttons::icon_button(
+                                        ui,
+                                        Icon::Close,
+                                        24.0,
+                                        false,
+                                        theme::BAD,
+                                        "Remove from ensemble",
                                     )
-                                    .show(ui)
                                     .clicked()
                                 {
-                                    let next = models
-                                        .iter()
-                                        .find(|m| !step.models.iter().any(|s| s == m.id))
-                                        .map_or("htdemucs", |m| m.id);
-                                    step.models.push(next.to_owned());
-                                }
-                                if step.is_ensemble() {
-                                    ui.add_space(8.0);
-                                    let opts: Vec<(EnsembleMode, &str)> =
-                                        EnsembleMode::ALL.iter().map(|m| (*m, m.label())).collect();
-                                    buttons::segmented(
-                                        ui,
-                                        &format!("ens-{i}"),
-                                        &mut step.ensemble,
-                                        &opts,
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("ⓘ")
-                                            .font(theme::regular(13.0))
-                                            .color(theme::TEXT_FAINT),
-                                    )
-                                    .on_hover_text(step.ensemble.hint());
+                                    remove_model = Some(mi);
                                 }
                             });
+                        }
+                        if let Some(mi) = remove_model {
+                            step.models.remove(mi);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_space(70.0);
+                            if Button::ghost("Ensemble model")
+                                .icon(Icon::Plus)
+                                .height(28.0)
+                                .tooltip(
+                                    "Run another model on the same input and combine the stems \
+                                 both make (slower, a little cleaner)",
+                                )
+                                .show(ui)
+                                .clicked()
+                            {
+                                let next = models
+                                    .iter()
+                                    .find(|m| !step.models.iter().any(|s| s == m.id))
+                                    .map_or("htdemucs", |m| m.id);
+                                step.models.push(next.to_owned());
+                            }
+                            if step.is_ensemble() {
+                                ui.add_space(8.0);
+                                let opts: Vec<(EnsembleMode, &str)> =
+                                    EnsembleMode::ALL.iter().map(|m| (*m, m.label())).collect();
+                                buttons::segmented(
+                                    ui,
+                                    &format!("ens-{i}"),
+                                    &mut step.ensemble,
+                                    &opts,
+                                );
+                                ui.label(
+                                    egui::RichText::new("ⓘ")
+                                        .font(theme::regular(13.0))
+                                        .color(theme::TEXT_FAINT),
+                                )
+                                .on_hover_text(step.ensemble.hint());
+                            }
                         });
-                        paint::glass_sheen(
-                            ui.painter(),
-                            shown.response.rect,
-                            CornerRadius::same(14),
-                            0.0,
-                        );
-                        // Link to the next step.
-                        if i + 1 < n_steps {
-                            let r = shown.response.rect;
-                            let x = r.left() + 26.0;
-                            let (lr, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
-                            let top = pos2(x, r.bottom());
-                            let bottom = pos2(x, lr.bottom() + 2.0);
-                            ui.painter().line_segment(
-                                [top, bottom - vec2(0.0, 3.0)],
-                                Stroke::new(1.4, color),
-                            );
-                            ui.painter().add(egui::Shape::convex_polygon(
-                                vec![bottom, bottom + vec2(-3.5, -5.0), bottom + vec2(3.5, -5.0)],
-                                color,
-                                Stroke::NONE,
-                            ));
-                        } else {
-                            ui.add_space(6.0);
-                        }
-                    }
-                });
-            if let Some(i) = remove_step {
-                ed.preset.chain.steps.remove(i);
-            }
-            if Button::new("Add step")
-                .icon(Icon::Plus)
-                .height(32.0)
-                .tooltip("Run another model on a stem from the steps above")
-                .show(ui)
-                .clicked()
-            {
-                let inputs = produced_before(app, &ed.preset.chain, n_steps);
-                let input = [StemKind::Instrumental, StemKind::Vocals, StemKind::Drums]
-                    .into_iter()
-                    .find(|k| inputs.contains(k))
-                    .map_or(StepInput::Mix, StepInput::Stem);
-                let model = if input == StepInput::Stem(StemKind::Instrumental) {
-                    "htdemucs"
-                } else {
-                    models.first().map_or("htdemucs", |m| m.id)
-                };
-                ed.preset.chain.steps.push(Step::new(input, model));
-            }
-
-            ui.add_space(14.0);
-            overline(ui, "Output");
-            ui.add_space(4.0);
-            let result = plan(app, &ed.preset.chain);
-            match &result {
-                Ok(p) => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                        for (step, k) in &p.outputs {
-                            buttons::chip(ui, k.label(), theme::stem_color(*k), true)
-                                .on_hover_text(format!("from step {}", step + 1));
-                        }
                     });
-                    ui.label(
-                        egui::RichText::new(
-                            "Stems a later step splits further are left out, and the first \
-                             step to make a stem wins.",
-                        )
-                        .font(theme::regular(11.5))
-                        .color(theme::TEXT_FAINT),
+                    paint::glass_sheen(
+                        ui.painter(),
+                        shown.response.rect,
+                        CornerRadius::same(14),
+                        0.0,
                     );
-                }
-                Err(e) => {
-                    ui.label(
-                        egui::RichText::new(e)
-                            .font(theme::regular(13.0))
-                            .color(theme::BAD),
-                    );
-                }
-            }
-            let valid = result.is_ok() && !ed.preset.name.trim().is_empty();
-
-            ui.add_space(16.0);
-            ui.horizontal(|ui| {
-                if ed.existing
-                    && Button::ghost("Delete")
-                        .icon(Icon::Close)
-                        .height(38.0)
-                        .show(ui)
-                        .clicked()
-                {
-                    delete = true;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if Button::primary("Save & use")
-                        .icon(Icon::Check)
-                        .enabled(valid)
-                        .height(38.0)
-                        .show(ui)
-                        .clicked()
-                    {
-                        save = true;
+                    // Link to the next step.
+                    if i + 1 < n_steps {
+                        let r = shown.response.rect;
+                        let x = r.left() + 26.0;
+                        let (lr, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
+                        let top = pos2(x, r.bottom());
+                        let bottom = pos2(x, lr.bottom() + 2.0);
+                        ui.painter()
+                            .line_segment([top, bottom - vec2(0.0, 3.0)], Stroke::new(1.4, color));
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            vec![bottom, bottom + vec2(-3.5, -5.0), bottom + vec2(3.5, -5.0)],
+                            color,
+                            Stroke::NONE,
+                        ));
+                    } else {
+                        ui.add_space(6.0);
                     }
-                    if Button::ghost("Cancel").height(38.0).show(ui).clicked() {
-                        close = true;
+                }
+            });
+        if let Some(i) = remove_step {
+            ed.preset.chain.steps.remove(i);
+        }
+        if Button::new("Add step")
+            .icon(Icon::Plus)
+            .height(32.0)
+            .tooltip("Run another model on a stem from the steps above")
+            .show(ui)
+            .clicked()
+        {
+            let inputs = produced_before(app, &ed.preset.chain, n_steps);
+            let input = [StemKind::Instrumental, StemKind::Vocals, StemKind::Drums]
+                .into_iter()
+                .find(|k| inputs.contains(k))
+                .map_or(StepInput::Mix, StepInput::Stem);
+            let model = if input == StepInput::Stem(StemKind::Instrumental) {
+                "htdemucs"
+            } else {
+                models.first().map_or("htdemucs", |m| m.id)
+            };
+            ed.preset.chain.steps.push(Step::new(input, model));
+        }
+
+        ui.add_space(14.0);
+        overline(ui, "Output");
+        ui.add_space(4.0);
+        let result = plan(app, &ed.preset.chain);
+        match &result {
+            Ok(p) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (step, k) in &p.outputs {
+                        buttons::chip(ui, k.label(), theme::stem_color(*k), true)
+                            .on_hover_text(format!("from step {}", step + 1));
                     }
                 });
+                ui.label(
+                    egui::RichText::new(
+                        "Stems a later step splits further are left out, and the first \
+                             step to make a stem wins.",
+                    )
+                    .font(theme::regular(11.5))
+                    .color(theme::TEXT_FAINT),
+                );
+            }
+            Err(e) => {
+                ui.label(
+                    egui::RichText::new(e)
+                        .font(theme::regular(13.0))
+                        .color(theme::BAD),
+                );
+            }
+        }
+        let valid = result.is_ok() && !ed.preset.name.trim().is_empty();
+
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            if ed.existing
+                && Button::ghost("Delete")
+                    .icon(Icon::Close)
+                    .height(38.0)
+                    .show(ui)
+                    .clicked()
+            {
+                delete = true;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if Button::primary("Save & use")
+                    .icon(Icon::Check)
+                    .enabled(valid)
+                    .height(38.0)
+                    .show(ui)
+                    .clicked()
+                {
+                    save = true;
+                }
+                if Button::ghost("Cancel").height(38.0).show(ui).clicked() {
+                    close = true;
+                }
             });
         });
+    });
+    if sheet.closing {
+        // Exit animation playing: the sheet is going away, ignore its buttons.
+        (save, delete, close) = (false, false, false);
+    }
     if save {
         let name = ed.preset.name.trim().to_owned();
         ed.preset.name = name.clone();
-        let id = app.settings.save_preset(ed.preset);
+        let id = app.settings.save_preset(ed.preset.clone());
         app.settings.preset_id = Some(id);
         app.toasts.success("Preset saved", name);
+        close = true;
     } else if delete {
         app.settings.delete_preset(&ed.preset.id);
-        app.toasts.info("Preset deleted", ed.preset.name);
-    } else if !(close || resp.should_close()) {
+        app.toasts.info("Preset deleted", ed.preset.name.clone());
+        close = true;
+    }
+    if close || resp.should_close() {
+        sheet.close(ctx);
+    }
+    // The sheet keeps its state until the exit animation has played.
+    if !sheet.finished() {
         app.preset_editor = Some(ed);
     }
 }
