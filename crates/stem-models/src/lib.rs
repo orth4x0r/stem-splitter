@@ -18,7 +18,8 @@
 //! | `dsp`       | windows, overlap-add, stereo / rate helpers |
 //! | `mdx`       | UVR MDX-Net separator |
 //! | `demucs`    | HTDemucs (STFT outside the graph) separator |
-//! | `roformer`  | complex-spectrogram separators: Mel-/BS-RoFormer and SCNet (STFT outside the graph) |
+//! | `roformer`  | complex-spectrogram separators: Mel-/BS-RoFormer, SCNet and MDX23C (STFT outside the graph) |
+//! | `mdx23c`    | MDX23C (TFC-TDF v3) geometry and export contract: drum parts, de-reverb |
 //! | `basic_pitch` | audio -> note posteriorgrams -> notes (Basic Pitch port), behind [`transcribe`] |
 //! | `midi_file` | notes -> Standard MIDI File, quantisation, behind [`transcribe`] |
 
@@ -30,6 +31,7 @@ mod download;
 mod dsp;
 mod manager;
 mod mdx;
+mod mdx23c;
 mod midi_file;
 mod network;
 mod roformer;
@@ -93,6 +95,21 @@ pub enum StemKind {
     /// What a karaoke model leaves after removing the lead vocal: the backing vocals, plus the
     /// instrumental when it was fed a full mix rather than a vocal stem.
     BackingVocals,
+    /// Drum parts, from drum separation models run on a drums stem.
+    Kick,
+    Snare,
+    Toms,
+    HiHat,
+    Ride,
+    Crash,
+    /// A vocal (or any source) with the reverb and echo taken out, from de-reverb models.
+    Dry,
+    /// What a de-reverb / de-echo model removed: the reverb tail and echoes.
+    Reverb,
+    /// A source with the noise taken out, from denoise models.
+    Clean,
+    /// What a denoise model removed.
+    Noise,
 }
 
 impl StemKind {
@@ -110,7 +127,32 @@ impl StemKind {
             StemKind::Effects => "Effects",
             StemKind::LeadVocals => "Lead vocals",
             StemKind::BackingVocals => "Backing vocals",
+            StemKind::Kick => "Kick",
+            StemKind::Snare => "Snare",
+            StemKind::Toms => "Toms",
+            StemKind::HiHat => "Hi-hat",
+            StemKind::Ride => "Ride",
+            StemKind::Crash => "Crash",
+            StemKind::Dry => "Dry",
+            StemKind::Reverb => "Reverb",
+            StemKind::Clean => "Clean",
+            StemKind::Noise => "Noise",
         }
+    }
+
+    /// The pieces of a drum kit that drum separation models output.
+    pub const DRUM_PARTS: [StemKind; 6] = [
+        StemKind::Kick,
+        StemKind::Snare,
+        StemKind::Toms,
+        StemKind::HiHat,
+        StemKind::Ride,
+        StemKind::Crash,
+    ];
+
+    /// One of [`StemKind::DRUM_PARTS`].
+    pub fn is_drum_part(self) -> bool {
+        Self::DRUM_PARTS.contains(&self)
     }
 }
 
@@ -156,6 +198,19 @@ pub enum ModelArch {
         segment_samples: usize,
         overlap: f32,
     },
+    /// MDX23C (TFC-TDF v3, ZFTurbo's Music-Source-Separation-Training) exported with the STFT
+    /// outside the graph (`tools/export_mdx23c_onnx.py`, see `mdx23c.rs`): the RoFormer STFT and
+    /// `demix()` chunking, but the graph sees only the lowest `dim_f` bins (`mix_spec
+    /// [1, 4, dim_f, T]` -> `stems_spec [1, S, 4, dim_f, T]`) and the bins above are zero
+    /// coming out. `segment_samples` is the config's `chunk_size`; `overlap` is
+    /// `1 - 1/num_overlap`.
+    Mdx23c {
+        n_fft: usize,
+        hop: usize,
+        dim_f: usize,
+        segment_samples: usize,
+        overlap: f32,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -173,6 +228,10 @@ pub struct ModelInfo {
     pub sha256: Option<&'static str>,
     pub size_bytes: u64,
     pub license: &'static str,
+    /// The weights are under a non-commercial licence (CC BY-NC and the like) or under no
+    /// stated licence at all: offered as a "personal use" extra, downloaded only when picked.
+    #[serde(default)]
+    pub non_commercial: bool,
 }
 
 impl ModelInfo {
@@ -197,6 +256,10 @@ impl ModelInfo {
             ModelArch::Scnet { .. } => Some(
                 "Small int8 model: quick on DirectML and still usable on the CPU, so pick the \
                  CPU if the GPU gives trouble.",
+            ),
+            ModelArch::Mdx23c { .. } => Some(
+                "Convolutional U-Net: about 1 GB of GPU memory on DirectML. On the CPU a \
+                 three-minute stem takes a few minutes.",
             ),
             ModelArch::HtDemucs { .. } | ModelArch::MdxNet { .. } => None,
         }
@@ -282,7 +345,7 @@ pub fn load_with(
     }
     let batch_hint = match info.arch {
         // Big fixed-batch-1 graphs: one segment per call, also on DirectML.
-        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => 1,
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } | ModelArch::Mdx23c { .. } => 1,
         _ => options.batch_size.unwrap_or(match device {
             Device::Cpu => 1,
             _ => 2,
@@ -300,8 +363,12 @@ pub fn load_with(
             Box::new(session),
             options,
         )?)),
-        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } => Ok(Box::new(
-            roformer::SpecSeparator::new(info.clone(), Box::new(session), options)?,
-        )),
+        ModelArch::RoFormer { .. } | ModelArch::Scnet { .. } | ModelArch::Mdx23c { .. } => {
+            Ok(Box::new(roformer::SpecSeparator::new(
+                info.clone(),
+                Box::new(session),
+                options,
+            )?))
+        }
     }
 }

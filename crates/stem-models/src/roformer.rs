@@ -1,5 +1,5 @@
-//! Complex-spectrogram separators with the STFT outside the graph: Mel-Band / BS-RoFormer and
-//! SCNet ONNX exports.
+//! Complex-spectrogram separators with the STFT outside the graph: Mel-Band / BS-RoFormer,
+//! SCNet and MDX23C ONNX exports.
 //!
 //! The graph sees one fixed-length segment's STFT and returns each source's complex
 //! spectrogram; the STFT, the iSTFT and the overlap-add happen here. Two I/O contracts are
@@ -16,7 +16,9 @@
 //! one fewer, in which case the last stem is the residual `mix - sum(predicted)` (e.g. the Kim
 //! Mel-RoFormer predicts vocals only; the instrumental is the rest).
 //!
-//! The STFT is centred with reflect padding, `F = n_fft / 2 + 1`. RoFormer exports use a
+//! The STFT is centred with reflect padding, `F = n_fft / 2 + 1`, except that MDX23C graphs see
+//! only the lowest `dim_f` bins (`F = dim_f`; the bins above come back as zeros, as
+//! `TFC_TDF_net`'s `STFT.inverse` pads them; see `mdx23c.rs`). RoFormer exports use a
 //! periodic Hann window, unnormalised; SCNet uses no window (ones) with `normalized=True`
 //! (×1/√n_fft in, ×√n_fft out). A segment of `L` samples is zero-padded to `(T - 1)·hop`
 //! samples when that is longer (SCNet.forward's padding) and the iSTFT is cut back to `L`.
@@ -78,6 +80,8 @@ pub(crate) struct SpecParams {
     pub scale: f32,
     /// Standardise the mix by its mono mean/std first (SCNet).
     pub standardize: bool,
+    /// Bins the graph sees: the lowest `dim_f` of [`SpecParams::bins`] (MDX23C), else all.
+    pub dim_f: usize,
 }
 
 /// Where the segments go for a track of `n` samples.
@@ -108,6 +112,7 @@ impl SpecParams {
         overlap: Option<f32>,
         graph_frames: Option<usize>,
     ) -> Result<Self> {
+        let mut dim_f = None;
         let (n_fft, hop, segment, default_overlap, window, scale, standardize, frames) = match *arch
         {
             ModelArch::RoFormer {
@@ -140,12 +145,37 @@ impl SpecParams {
                 true,
                 scnet_frames(segment_samples, hop),
             ),
+            ModelArch::Mdx23c {
+                n_fft,
+                hop,
+                dim_f: f,
+                segment_samples,
+                overlap,
+            } => {
+                dim_f = Some(f);
+                (
+                    n_fft,
+                    hop,
+                    segment_samples,
+                    overlap,
+                    Window::Hann,
+                    1.0,
+                    false,
+                    segment_samples / hop + 1,
+                )
+            }
             _ => {
                 return Err(ModelError::Runtime(
-                    "not a RoFormer / SCNet architecture".into(),
+                    "not a RoFormer / SCNet / MDX23C architecture".into(),
                 ));
             }
         };
+        let dim_f = dim_f.unwrap_or(n_fft / 2 + 1);
+        if dim_f == 0 || dim_f > n_fft / 2 + 1 {
+            return Err(ModelError::Runtime(format!(
+                "bad spectrogram parameters: dim_f {dim_f} for n_fft {n_fft}"
+            )));
+        }
         let frames = graph_frames.unwrap_or(frames);
         if n_fft == 0 || hop == 0 || segment < n_fft || frames < 2 {
             return Err(ModelError::Runtime(format!(
@@ -173,12 +203,18 @@ impl SpecParams {
             window,
             scale,
             standardize,
+            dim_f,
         })
     }
 
-    /// Bins per frame.
+    /// Bins per frame of the STFT.
     pub fn bins(&self) -> usize {
         self.n_fft / 2 + 1
+    }
+
+    /// Bins per frame the graph takes and returns (`dim_f`).
+    pub fn graph_bins(&self) -> usize {
+        self.dim_f
     }
 
     /// Samples the STFT of one segment covers (`L`, or `(T - 1)·hop` if longer).
@@ -315,7 +351,8 @@ impl SpecStft {
     }
 
     /// iSTFT of the `[bins, frames]` planes times `scale`, window-sum-square normalised, cut to
-    /// `length` samples (like `torch.istft(..., length=length)`).
+    /// `length` samples (like `torch.istft(..., length=length)`). Planes with fewer rows than
+    /// `bins` hold the lowest bins; the rest are taken as zero.
     pub fn inverse_planes(
         &self,
         re: &[f32],
@@ -334,9 +371,14 @@ impl SpecStft {
         let mut frame = self.inv.make_output_vec();
         let mut scratch = self.inv.make_scratch_vec();
         let s = scale / n as f32;
+        let have = (re.len() / frames).min(bins);
         for t in 0..frames {
             for (f, c) in freq.iter_mut().enumerate().take(bins) {
-                *c = Complex32::new(re[f * frames + t], im[f * frames + t]);
+                *c = if f < have {
+                    Complex32::new(re[f * frames + t], im[f * frames + t])
+                } else {
+                    Complex32::new(0.0, 0.0)
+                };
             }
             freq[0].im = 0.0;
             if n.is_multiple_of(2) {
@@ -450,11 +492,12 @@ pub(crate) struct SpecSeparator {
 
 impl SpecSeparator {
     pub fn new(info: ModelInfo, net: Box<dyn Network>, options: &LoadOptions) -> Result<Self> {
-        let n_fft = match info.arch {
-            ModelArch::RoFormer { n_fft, .. } | ModelArch::Scnet { n_fft, .. } => n_fft,
+        let graph_bins = match info.arch {
+            ModelArch::RoFormer { n_fft, .. } | ModelArch::Scnet { n_fft, .. } => n_fft / 2 + 1,
+            ModelArch::Mdx23c { dim_f, .. } => dim_f,
             _ => {
                 return Err(ModelError::Runtime(format!(
-                    "{} is not a RoFormer / SCNet model",
+                    "{} is not a RoFormer / SCNet / MDX23C model",
                     info.id
                 )));
             }
@@ -464,7 +507,7 @@ impl SpecSeparator {
             &net.input_shapes(),
             &net.input_names(),
             &net.output_names(),
-            n_fft / 2 + 1,
+            graph_bins,
         )?;
         if let Some(t) = graph_frames {
             tracing::debug!("{}: graph takes {t} frames, layout {layout:?}", info.id);
@@ -486,19 +529,29 @@ impl SpecSeparator {
     fn run_segment(&mut self, seg: &[Vec<f32>; 2]) -> Result<Vec<[Vec<f32>; 2]>> {
         let p = &self.params;
         let (bins, frames) = (p.bins(), p.frames);
-        let plane = bins * frames;
+        let full = bins * frames;
+        // The graph's planes: the lowest `dim_f` rows of each (frequency-major) STFT plane.
+        let gbins = p.graph_bins();
+        let plane = gbins * frames;
         let padded_len = p.padded_segment();
         // Per channel: real plane, imaginary plane.
-        let mut re = vec![0.0f32; 2 * plane];
-        let mut im = vec![0.0f32; 2 * plane];
-        re.par_chunks_mut(plane)
-            .zip(im.par_chunks_mut(plane))
+        let mut re = vec![0.0f32; 2 * full];
+        let mut im = vec![0.0f32; 2 * full];
+        re.par_chunks_mut(full)
+            .zip(im.par_chunks_mut(full))
             .zip(seg.par_iter())
             .for_each(|((r, i), x)| {
                 let mut padded = x.clone();
                 padded.resize(padded_len, 0.0);
                 self.stft.forward_planes(&padded, frames, p.scale, r, i);
             });
+        if gbins < bins {
+            // Channel 1's planes move down to follow channel 0's cropped ones.
+            for v in [&mut re, &mut im] {
+                v.copy_within(full..full + plane, plane);
+                v.truncate(2 * plane);
+            }
+        }
 
         let outputs = match self.layout {
             IoLayout::Stacked => {
@@ -509,17 +562,17 @@ impl SpecSeparator {
                 }
                 drop((re, im));
                 self.net.run(&[TensorIn {
-                    shape: vec![1, 4, bins, frames],
+                    shape: vec![1, 4, gbins, frames],
                     data: &stacked,
                 }])?
             }
             IoLayout::Split { real_in, .. } => {
                 let real = TensorIn {
-                    shape: vec![1, 2, bins, frames],
+                    shape: vec![1, 2, gbins, frames],
                     data: &re,
                 };
                 let imag = TensorIn {
-                    shape: vec![1, 2, bins, frames],
+                    shape: vec![1, 2, gbins, frames],
                     data: &im,
                 };
                 let inputs = if real_in == 0 {
@@ -548,14 +601,14 @@ impl SpecSeparator {
 
     /// Real and imaginary views of the output, and the number of sources in it.
     fn split_outputs(&self, mut outputs: Vec<TensorOut>) -> Result<(Planes, Planes, usize)> {
-        let plane = self.params.bins() * self.params.frames;
+        let plane = self.params.graph_bins() * self.params.frames;
         let want = self.info.stems.len();
         let sources_ok = |s: usize| s == want || s + 1 == want;
         let err = |shapes: Vec<Vec<usize>>| {
             ModelError::Runtime(format!(
                 "{}: unexpected output shapes {shapes:?} for {want} stems of {} x {} bins/frames",
                 self.info.id,
-                self.params.bins(),
+                self.params.graph_bins(),
                 self.params.frames
             ))
         };

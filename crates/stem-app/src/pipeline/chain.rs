@@ -483,7 +483,7 @@ fn demo_input(
 }
 
 /// Synthetic stems after a short fake run.
-struct DemoRunner;
+pub(super) struct DemoRunner;
 
 impl Runner for DemoRunner {
     fn separate(
@@ -507,16 +507,20 @@ impl Runner for DemoRunner {
 }
 
 /// ONNX Runtime: makes sure the runtime and each model are downloaded, loads and runs it.
-struct OrtRunner {
+pub(super) struct OrtRunner {
     mgr: ModelManager,
     device: Device,
 }
 
 impl OrtRunner {
     fn new(req: &JobRequest) -> Self {
+        Self::with(&req.paths, req.device)
+    }
+
+    pub(super) fn with(paths: &crate::paths::AppPaths, device: Device) -> Self {
         Self {
-            mgr: ModelManager::new(req.paths.models.clone()),
-            device: req.device,
+            mgr: ModelManager::new(paths.models.clone()),
+            device,
         }
     }
 }

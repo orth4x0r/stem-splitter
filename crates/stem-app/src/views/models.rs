@@ -6,6 +6,7 @@ use eframe::egui::{
 
 use crate::app::StemApp;
 use crate::backend::human_bytes;
+use crate::pipeline::refine::RefineOp;
 use crate::theme::{self, motion};
 use crate::widgets::buttons::{self, Button};
 use crate::widgets::icons::{self, Icon};
@@ -41,6 +42,36 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         .model(app.settings.model_id.as_deref())
         .map(|m| m.id)
         .filter(|_| app.settings.active_preset().is_none());
+    // Drum-part and clean-up models run on a stem, not the mix: they get their own group.
+    let (extras, main): (Vec<_>, Vec<_>) =
+        models.into_iter().partition(|m| RefineOp::of(m).is_some());
+    cards(app, ui, &main, selected, false);
+    if !extras.is_empty() {
+        ui.add_space(14.0);
+        overline(ui, "Drum parts & vocal clean-up  ·  personal use");
+        ui.label(
+            egui::RichText::new(
+                "Run from a Drums or Vocals card in the results (Split / Clean), or as a chain \
+                 step. Most of these weights are non-commercial or carry no licence: fine for \
+                 your own beats, check before releasing.",
+            )
+            .font(theme::regular(12.5))
+            .color(theme::TEXT_FAINT),
+        );
+        ui.add_space(8.0);
+        cards(app, ui, &extras, None, true);
+    }
+}
+
+/// One grid of model cards. `extras` = stem refiners: clicking doesn't make them the split
+/// model, they're used from stem cards and chains.
+fn cards(
+    app: &mut StemApp,
+    ui: &mut egui::Ui,
+    models: &[stem_models::ModelInfo],
+    selected: Option<&str>,
+    extras: bool,
+) {
     let t = ui.input(|i| i.time);
     let gap = 16.0;
     let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
@@ -53,7 +84,11 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 let (rect, resp) = ui.allocate_exact_size(vec2(cw, ch), Sense::click());
                 let resp = resp
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(format!("License: {}", m.license));
+                    .on_hover_text(if m.non_commercial {
+                        format!("License: {}\n{}", m.license, super::refine::NC_TIP)
+                    } else {
+                        format!("License: {}", m.license)
+                    });
                 let sel = selected == Some(m.id);
                 let h = ui
                     .ctx()
@@ -186,6 +221,15 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                             Color32::WHITE,
                         );
                     }
+                    if m.non_commercial {
+                        let w = super::refine::nc_badge_width(p, 10.5);
+                        super::refine::nc_badge(
+                            p,
+                            inner.right() - 20.0 - w,
+                            inner.top() + 46.0,
+                            10.5,
+                        );
+                    }
                     // Description: up to two wrapped lines, cut with an ellipsis.
                     let mut job = egui::text::LayoutJob::simple(
                         m.description.to_owned(),
@@ -249,6 +293,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 } else {
                     let (dot, status) = if ready {
                         (theme::GOOD, "Installed")
+                    } else if soon && extras {
+                        (theme::WARN, "Not hosted · export it with the tools/ script")
                     } else if soon {
                         (theme::WARN, "Coming soon · needs a manual ONNX export")
                     } else if partial > 0 {
@@ -304,6 +350,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         {
                             app.download_model(m.id);
                         }
+                    } else if extras {
+                        // Picked from a stem card, not here.
                     } else if !sel
                         && Button::new("Use this")
                             .icon(Icon::Check)
@@ -314,7 +362,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                         app.pick_model(m.id);
                     }
                 }
-                if resp.clicked() && !soon {
+                if resp.clicked() && !soon && !extras {
                     app.pick_model(m.id);
                 }
                 if soon {

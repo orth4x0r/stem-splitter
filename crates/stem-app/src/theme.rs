@@ -51,6 +51,18 @@ pub fn stem_color(kind: StemKind) -> Color32 {
         StemKind::Effects => Color32::from_rgb(244, 114, 182),
         StemKind::LeadVocals => Color32::from_rgb(255, 92, 120),
         StemKind::BackingVocals => Color32::from_rgb(232, 121, 249),
+        // Drum parts: the skins warm like the drums stem they come from, the metals cool.
+        StemKind::Kick => Color32::from_rgb(255, 94, 58),
+        StemKind::Snare => Color32::from_rgb(255, 212, 92),
+        StemKind::Toms => Color32::from_rgb(255, 150, 122),
+        StemKind::HiHat => Color32::from_rgb(190, 242, 100),
+        StemKind::Ride => Color32::from_rgb(56, 189, 248),
+        StemKind::Crash => Color32::from_rgb(165, 243, 252),
+        // Clean-up: the kept part stays in the vocal family, what was taken out goes muted.
+        StemKind::Dry => Color32::from_rgb(255, 128, 191),
+        StemKind::Reverb => Color32::from_rgb(129, 140, 248),
+        StemKind::Clean => Color32::from_rgb(110, 231, 183),
+        StemKind::Noise => Color32::from_rgb(148, 163, 184),
     }
 }
 

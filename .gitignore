@@ -5,3 +5,4 @@
 /models
 /.claude/worktrees
 /crates/stem-models/tests/fixtures/
+/tools/.msst-cache/

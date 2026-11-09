@@ -16,6 +16,11 @@
 //! on the Models page), preset-editor (editing a chain with an ensemble step), chain-progress
 //! (step 2 of a chain running), stem-cache (Settings with the stem cache rows; use a tall
 //! `STEM_SHOT_SIZE` to reach Storage).
+//! Drum parts and vocal clean-up: drums (results with the six drum parts under Drums; use a
+//! tall `STEM_SHOT_SIZE`), drums-running (a drum split in flight on the Drums card),
+//! drums-menu (the Split menu open), vocals-clean (Dry + Reverb under Vocals), drums-models
+//! (the personal-use model group with NC badges; tall size), drums-presets (the new built-in
+//! chains on the Models page).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -195,7 +200,8 @@ impl Shot {
                 });
             }
             "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
-            | "transform" | "kit" | "midi" | "midi-quantize" | "section-results" => {
+            | "transform" | "kit" | "midi" | "midi-quantize" | "section-results" | "drums"
+            | "drums-running" | "drums-menu" | "vocals-clean" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -289,7 +295,9 @@ impl Shot {
                     }
                     crate::views::midi::open_sheet(app, 2, false, _ctx);
                 }
-                if self.scene == "transform" || self.scene == "kit" {
+                if self.scene.starts_with("drums") || self.scene == "vocals-clean" {
+                    drums_scene(app, &self.scene, _ctx);
+                } else if self.scene == "transform" || self.scene == "kit" {
                     dsp_scene(app, &self.scene);
                 } else if self.scene == "export" {
                     app.settings.export_without = true;
@@ -328,6 +336,11 @@ impl Shot {
                         },
                     );
                 }
+            }
+            "drums-models" => app.page = Page::Models,
+            "drums-presets" => {
+                app.page = Page::Models;
+                app.settings.preset_id = Some("builtin:drum-kit-pieces".into());
             }
             "presets" | "chains" | "preset-editor" | "chain-progress" | "stem-cache" => {
                 preset_scene(app, &self.scene);
@@ -507,6 +520,69 @@ fn dsp_scene(app: &mut StemApp, scene: &str) {
                 audio: Arc::new(audio),
                 secs: t0.elapsed().as_secs_f64(),
             });
+        }
+    }
+}
+
+/// Drum-part / clean-up scenes on top of the results scene (Vocals, Drums, Bass, Other).
+fn drums_scene(app: &mut StemApp, scene: &str, ctx: &egui::Context) {
+    let sub = |kinds: &[StemKind]| -> Vec<StemOut> {
+        kinds
+            .iter()
+            .map(|k| {
+                let audio = crate::demo::stem(*k);
+                let env = Envelope::from_buffer(&audio, BUCKETS);
+                StemOut {
+                    kind: *k,
+                    audio,
+                    path: PathBuf::from(format!("{}.wav", k.label().to_lowercase())),
+                    env,
+                }
+            })
+            .collect()
+    };
+    if let Some(s) = &mut app.session {
+        s.selection = None;
+        s.tracks[3].mute = false;
+    }
+    match scene {
+        "drums" => {
+            app.add_sub_stems(1, sub(&StemKind::DRUM_PARTS));
+            if let Some(s) = &mut app.session {
+                for (k, lvl) in [0.85, 0.6, 0.2, 0.7, 0.1, 0.4].into_iter().enumerate() {
+                    s.tracks[4 + k].level = lvl;
+                }
+            }
+            app.toasts.success("6 drum parts ready", "DrumSep MDX23C");
+        }
+        "vocals-clean" => {
+            app.add_sub_stems(0, sub(&[StemKind::Dry, StemKind::Reverb]));
+            if let Some(s) = &mut app.session {
+                s.tracks[4].level = 0.75;
+                s.tracks[5].level = 0.3;
+            }
+            app.toasts.success("2 clean-up stems ready", "Reverb HQ");
+        }
+        _ => {
+            if scene == "drums-running" {
+                let out_dir = app.session.as_ref().map(|s| s.out_dir.clone());
+                app.refine = Some(crate::refine::RefineJob {
+                    id: 77,
+                    op: crate::pipeline::refine::RefineOp::DrumParts,
+                    track: 1,
+                    model_name: "DrumSep MDX23C".into(),
+                    model_id: "drumsep-mdx23c",
+                    detail: "CPU · segment 7/12".into(),
+                    frac: Some(0.58),
+                    shown: 0.58,
+                    started: -41.0,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    out_dir: out_dir.unwrap_or_default(),
+                });
+            } else {
+                // The anchor is corrected by the card on the first frame.
+                crate::views::refine::open_menu(ctx, 1, egui::Rect::NOTHING);
+            }
         }
     }
 }

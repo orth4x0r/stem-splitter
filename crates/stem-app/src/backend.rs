@@ -77,7 +77,8 @@ impl Backend {
         for m in &self.models {
             let ok = if self.demo {
                 // Pretend the small model is already there.
-                m.id == "mdx-inst-hq3" || self.downloaded.get(m.id).copied().unwrap_or(false)
+                matches!(m.id, "mdx-inst-hq3" | "drumsep-mdx23c" | "mdx-reverb-hq")
+                    || self.downloaded.get(m.id).copied().unwrap_or(false)
             } else {
                 guard("model check", || mgr.is_downloaded(m)).unwrap_or(false)
             };
@@ -147,6 +148,7 @@ fn demo_registry() -> Vec<ModelInfo> {
             sha256: None,
             size_bytes: 168_000_000,
             license: "MIT",
+            non_commercial: false,
         },
         ModelInfo {
             id: "htdemucs-6s",
@@ -168,6 +170,7 @@ fn demo_registry() -> Vec<ModelInfo> {
             sha256: None,
             size_bytes: 105_000_000,
             license: "MIT",
+            non_commercial: false,
         },
         ModelInfo {
             id: "mdx-inst-hq3",
@@ -186,6 +189,7 @@ fn demo_registry() -> Vec<ModelInfo> {
             sha256: None,
             size_bytes: 66_800_000,
             license: "MIT",
+            non_commercial: false,
         },
         ModelInfo {
             id: "dnr-cinematic",
@@ -204,13 +208,24 @@ fn demo_registry() -> Vec<ModelInfo> {
             sha256: None,
             size_bytes: 54_200_000,
             license: "Apache-2.0",
+            non_commercial: false,
         },
     ];
     // The models the built-in presets use (catalog data only; nothing is downloaded).
     models.extend(
-        ["mel-roformer-kim", "mdx-kim-vocal-2", "scnet"]
-            .into_iter()
-            .filter_map(stem_models::find_model),
+        [
+            "mel-roformer-kim",
+            "mdx-kim-vocal-2",
+            "scnet",
+            // Drum parts and vocal clean-up (stem cards, chains).
+            "drumsep-mdx23c",
+            "mdx-reverb-hq",
+            "mdx23c-dereverb",
+            "mel-roformer-denoise",
+            "mel-roformer-dereverb-echo",
+        ]
+        .into_iter()
+        .filter_map(stem_models::find_model),
     );
     models
 }

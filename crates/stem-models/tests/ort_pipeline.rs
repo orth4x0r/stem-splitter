@@ -71,6 +71,7 @@ fn mdx_through_onnxruntime() {
         sha256: None,
         size_bytes: 0,
         license: "test",
+        non_commercial: false,
     };
     let mut sep = stem_models::load(&info, &dir.join("mdx_half.onnx"), Device::Auto).unwrap();
     if !cfg!(windows) {
@@ -130,6 +131,7 @@ fn htdemucs_through_onnxruntime() {
         sha256: None,
         size_bytes: 0,
         license: "test",
+        non_commercial: false,
     };
     let mut sep = stem_models::load(&info, &dir.join("htdemucs_linear.onnx"), Device::Cpu).unwrap();
     let mix = tones(80_000, 44_100.0);

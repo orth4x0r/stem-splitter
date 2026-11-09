@@ -789,8 +789,18 @@ fn model_combo(
                     .map(|k| k.label())
                     .collect::<Vec<_>>()
                     .join(" · ");
-                ui.selectable_value(value, m.id.to_owned(), m.name)
-                    .on_hover_text(stems);
+                let label = if m.non_commercial {
+                    format!("{}  · NC", m.name)
+                } else {
+                    m.name.to_owned()
+                };
+                let tip = if m.non_commercial {
+                    format!("{stems}\nNC · personal use. License: {}", m.license)
+                } else {
+                    stems
+                };
+                ui.selectable_value(value, m.id.to_owned(), label)
+                    .on_hover_text(tip);
             }
         });
 }
@@ -1068,6 +1078,10 @@ pub fn editor(app: &mut StemApp, ctx: &egui::Context) {
                     .map_or(StepInput::Mix, StepInput::Stem);
                 let model = if input == StepInput::Stem(StemKind::Instrumental) {
                     "htdemucs"
+                } else if input == StepInput::Stem(StemKind::Drums) {
+                    "drumsep-mdx23c"
+                } else if input == StepInput::Stem(StemKind::Vocals) {
+                    "mdx-reverb-hq"
                 } else {
                     models.first().map_or("htdemucs", |m| m.id)
                 };

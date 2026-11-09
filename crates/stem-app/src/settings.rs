@@ -144,6 +144,26 @@ pub fn builtin_presets() -> Vec<Preset> {
                 ensemble: EnsembleMode::Average,
             }],
         ),
+        p(
+            "drum-kit-pieces",
+            "Drums → kit pieces",
+            "HTDemucs takes the drums out, DrumSep splits them into kick, snare, toms, hi-hat, \
+             ride and crash. NC · personal use.",
+            vec![
+                Step::new(StepInput::Mix, "htdemucs"),
+                Step::new(StepInput::Stem(StemKind::Drums), "drumsep-mdx23c"),
+            ],
+        ),
+        p(
+            "dry-vocals",
+            "Dry vocals",
+            "RoFormer takes the vocal, Reverb HQ strips its reverb and echo: a dry acapella \
+             plus the wet part. NC · personal use.",
+            vec![
+                Step::new(StepInput::Mix, "mel-roformer-kim"),
+                Step::new(StepInput::Stem(StemKind::Vocals), "mdx-reverb-hq"),
+            ],
+        ),
     ]
 }
 
@@ -350,7 +370,7 @@ mod tests {
     fn builtin_presets_use_real_models() {
         let find = |id: &str| stem_models::find_model(id);
         let all = builtin_presets();
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 6);
         for p in &all {
             assert!(p.is_builtin());
             let plan = p
@@ -372,6 +392,23 @@ mod tests {
     }
 
     #[test]
+    fn refine_presets_output_parts() {
+        let find = |id: &str| stem_models::find_model(id);
+        let all = builtin_presets();
+        let kit = all
+            .iter()
+            .find(|p| p.id == "builtin:drum-kit-pieces")
+            .unwrap();
+        let kinds = kit.chain.plan(&find).unwrap().kinds();
+        for k in StemKind::DRUM_PARTS {
+            assert!(kinds.contains(&k), "{k:?} in {kinds:?}");
+        }
+        let dry = all.iter().find(|p| p.id == "builtin:dry-vocals").unwrap();
+        let kinds = dry.chain.plan(&find).unwrap().kinds();
+        assert!(kinds.contains(&StemKind::Dry) && kinds.contains(&StemKind::Instrumental));
+    }
+
+    #[test]
     fn user_presets_save_replace_and_delete() {
         let mut s = Settings::default();
         let mut p = builtin_presets().remove(2);
@@ -379,7 +416,7 @@ mod tests {
         // Saving a copy of a built-in makes a new user preset.
         let id = s.save_preset(p.clone());
         assert_eq!(id, "user:1");
-        assert_eq!(s.all_presets().len(), 5);
+        assert_eq!(s.all_presets().len(), 7);
         let mut edited = s.find_preset(&id).unwrap();
         edited.name = "Renamed".into();
         assert_eq!(s.save_preset(edited), id);

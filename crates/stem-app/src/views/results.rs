@@ -18,6 +18,8 @@ use crate::widgets::waveform_view::{Lane, LaneAction};
 
 const CONTROLS_W: f32 = 236.0;
 const LANE_H: f32 = 84.0;
+/// How far a sub-stem card sits in from its parent (the tree line runs in the gap).
+const SUB_INDENT: f32 = 26.0;
 
 pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let Some(s) = &app.session else { return };
@@ -127,6 +129,8 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let playhead = app.player.position();
     let playing = app.player.is_playing();
     let snap = app.settings.snap;
+    // A split / clean-up in flight: which card, and how far.
+    let refining = app.refine.as_ref().map(|j| (j.track, j.frac));
     let Some(s) = &mut app.session else { return };
     let dur = s.duration;
     if playing {
@@ -211,12 +215,34 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut drag_out: Option<(std::path::PathBuf, PillAction)> = None;
     let mut open_kit = None;
     let mut open_midi: Option<usize> = None;
-    for i in 0..s.tracks.len() {
+    let mut strip: Option<(Rect, usize, Color32)> = None;
+    // Sub-stems (drum parts, clean-up results) follow the stem they came from, indented.
+    let order = s.display_order();
+    for &i in &order {
         let audible = s.audible(i);
         let selected_lane = s.selection.is_some() && s.sel_track == i;
+        let depth = s.depth(i);
+        let parent = s.parent_index(i);
+        let last_child = parent.is_none_or(|p| s.children(p).last() == Some(&i));
+        let n_children = s.children(i).len();
+        let parent_color = parent.map(|p| theme::stem_color(s.tracks[p].kind));
         let tr = &mut s.tracks[i];
         let color = theme::stem_color(tr.kind);
-        let (card, card_resp) = ui.allocate_exact_size(vec2(full_w, LANE_H + 20.0), Sense::hover());
+        let indent = depth as f32 * SUB_INDENT;
+        let (slot, card_resp) = ui.allocate_exact_size(vec2(full_w, LANE_H + 20.0), Sense::hover());
+        let card = Rect::from_min_max(pos2(slot.left() + indent, slot.top()), slot.max);
+        if let Some(pc) = parent_color {
+            // From the gap above (under the parent or the previous sibling) to this card.
+            super::refine::tree_line(
+                ui.painter(),
+                card.left() - SUB_INDENT + 13.0,
+                card.top() - 6.0,
+                card.center().y,
+                card.left() - 1.0,
+                (!last_child).then_some(card.bottom() + 6.0),
+                pc,
+            );
+        }
         let hover =
             ui.ctx()
                 .animate_bool_with_time(Id::unique(("card", i)), card_resp.hovered(), 0.15);
@@ -257,7 +283,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         // Left controls.
         let ctrl = Rect::from_min_size(
             card.min + vec2(18.0, 14.0),
-            vec2(CONTROLS_W - 18.0, LANE_H - 8.0),
+            vec2(CONTROLS_W - 18.0 - indent, LANE_H - 8.0),
         );
         let mut cui = ui.new_child(
             egui::UiBuilder::new()
@@ -284,7 +310,14 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            p.text(
+            // Clipped short of the drag pill (and the Kit button on drum cards).
+            let kit = tr.kind == stem_models::StemKind::Drums || tr.kind.is_drum_part();
+            let room = ctrl.right() - if kit { 132.0 } else { 76.0 };
+            p.with_clip_rect(
+                p.clip_rect()
+                    .intersect(Rect::from_x_y_ranges(ctrl.left()..=room, ctrl.y_range())),
+            )
+            .text(
                 pos2(ctrl.left() + 2.0, ctrl.top() + 30.0),
                 Align2::LEFT_CENTER,
                 file,
@@ -326,10 +359,35 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         {
             drag_out = Some((tr.path.clone(), a));
         }
-        if tr.kind == stem_models::StemKind::Drums
+        if (tr.kind == stem_models::StemKind::Drums || tr.kind.is_drum_part())
             && super::kit::kit_button(ui, pill.left() - 6.0, pill.center().y, i, color)
         {
             open_kit = Some(i);
+        }
+        // "Split drums" / "Clean vocals", left of the level meter.
+        if let Some(op) = crate::pipeline::refine::RefineOp::for_stem(tr.kind) {
+            use super::refine::PillState;
+            let state = match refining {
+                Some((t, f)) if t == i => PillState::Running(f),
+                Some(_) => PillState::Busy,
+                None if n_children > 0 && op == crate::pipeline::refine::RefineOp::DrumParts => {
+                    PillState::Done(n_children)
+                }
+                None => PillState::Idle,
+            };
+            let (r, clicked) = super::refine::action_pill(
+                ui,
+                ctrl.right() - 68.0,
+                ctrl.top() + 10.0,
+                i,
+                op,
+                color,
+                &state,
+            );
+            if clicked {
+                super::refine::toggle_menu(ui.ctx(), i, r);
+            }
+            super::refine::track_anchor(ui.ctx(), i, r);
         }
         cui.add_space(44.0);
         cui.horizontal(|ui| {
@@ -390,8 +448,16 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             Some(LaneAction::Select(a, b)) => new_sel = Some((i, Some((a, b)))),
             None => {}
         }
+        if refining.is_some_and(|(t, _)| t == i) {
+            strip = Some((lane_rect, i, color));
+        }
         ui.add_space(6.0);
     }
+    if let Some((lane, i, color)) = strip {
+        super::refine::progress_strip(app, ui, lane, i, color);
+    }
+    super::refine::menu(app, ui.ctx());
+    let Some(s) = &mut app.session else { return };
     if let Some((i, sel)) = new_sel {
         s.selection = sel;
         s.sel_track = i;

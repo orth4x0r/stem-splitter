@@ -380,6 +380,7 @@ pub fn estimate_secs(arch: &ModelArch, gpu: bool, audio_secs: f64) -> f64 {
         ModelArch::HtDemucs { .. } => (0.12, 0.9),
         ModelArch::RoFormer { .. } => (0.5, 6.0),
         ModelArch::Scnet { .. } => (0.08, 0.7),
+        ModelArch::Mdx23c { .. } => (0.2, 2.5),
     };
     let rate = if gpu { on_gpu } else { on_cpu };
     let load = if gpu { 5.0 } else { 3.0 };

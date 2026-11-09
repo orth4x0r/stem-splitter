@@ -2,10 +2,12 @@
 //! channel of [`AppEvent`]s; the UI thread only polls it.
 //!
 //! Chains / presets (several models in a row, ensembles) and the stem cache live in the
-//! `chain` and `cache` submodules.
+//! `chain` and `cache` submodules; `refine` runs one more model on a stem of the open session
+//! (drum parts, vocal clean-up).
 
 pub mod cache;
 pub mod chain;
+pub mod refine;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -172,6 +174,8 @@ pub enum AppEvent {
     FfmpegDone(Result<PathBuf, String>),
     /// Message and destination folder.
     StemsExported(Result<(String, PathBuf), String>),
+    /// "Split drums" / "Clean vocals" on a session stem.
+    Refine(u64, refine::RefineEvent),
 }
 
 /// Sends events and wakes the UI.

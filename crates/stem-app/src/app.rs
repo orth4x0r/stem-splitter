@@ -72,6 +72,8 @@ pub struct Track {
     pub solo: bool,
     /// Smoothed meter value.
     pub level: f32,
+    /// The stem this one was split from (drum parts under Drums, dry vocals under Vocals).
+    pub parent: Option<StemKind>,
 }
 
 pub struct Session {
@@ -171,7 +173,7 @@ pub struct StemApp {
     rx: Receiver<AppEvent>,
     pub model_downloads: HashMap<String, ModelDl>,
     pub ytdlp_busy: bool,
-    next_job_id: u64,
+    pub(crate) next_job_id: u64,
     pub shot: Option<Shot>,
     /// Drag-and-drop hover strength for the overlay, set each frame.
     pub drop_hover: bool,
@@ -204,6 +206,8 @@ pub struct StemApp {
     perf: Option<Perf>,
     /// The open "pick a section" step (after fetch + decode, before separating).
     pub section: Option<crate::section::SectionPick>,
+    /// "Split drums" / "Clean vocals" running on a stem of the open session.
+    pub refine: Option<crate::refine::RefineJob>,
     /// Where the picker should start once the pre-split step finishes.
     pending_preset: Option<crate::section::SplitRange>,
 }
@@ -279,6 +283,7 @@ impl StemApp {
             midi: None,
             midi_prefs: Default::default(),
             section: None,
+            refine: None,
             pending_preset: None,
         };
         theme::motion::set_reduced(app.settings.reduce_motion);
@@ -681,6 +686,10 @@ impl StemApp {
             .iter()
             .map(|s| s.audio.duration_secs())
             .fold(0.0, f64::max);
+        // A refine run belongs to the session it started in.
+        self.cancel_refine();
+        self.refine = None;
+        let kinds: Vec<StemKind> = out.stems.iter().map(|s| s.kind).collect();
         let mut tracks = Vec::new();
         let mut audio = Vec::new();
         for s in out.stems {
@@ -692,6 +701,7 @@ impl StemApp {
                 mute: false,
                 solo: false,
                 level: 0.0,
+                parent: pipeline::refine::parent_kind(s.kind, &kinds),
             });
             audio.push(s.audio);
         }
@@ -1069,6 +1079,7 @@ impl StemApp {
                         Err(e) => self.toasts.error("yt-dlp update failed", e),
                     }
                 }
+                AppEvent::Refine(id, ev) => self.on_refine_event(id, ev),
                 AppEvent::SampleExported(res) => match res {
                     Ok(p) => self.toasts.success(
                         "Sample exported",

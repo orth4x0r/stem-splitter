@@ -13,6 +13,7 @@ mod models_dl;
 pub mod presets;
 mod progress;
 mod queue;
+pub mod refine;
 mod results;
 mod section;
 mod settings;
