@@ -112,6 +112,7 @@ impl Shot {
                 duration_secs: 32.0,
                 bpm: Some(90.0),
                 key: Some("C major".into()),
+                grid_nudge: None,
             },
             HistoryEntry {
                 title: "Soul Sample Flip 1972".into(),
@@ -130,6 +131,7 @@ impl Shot {
                 duration_secs: 214.0,
                 bpm: Some(96.0),
                 key: Some("Eb major".into()),
+                grid_nudge: None,
             },
             HistoryEntry {
                 title: "voice memo 03".into(),
@@ -141,6 +143,7 @@ impl Shot {
                 duration_secs: 61.0,
                 bpm: None,
                 key: None,
+                grid_nudge: None,
             },
             HistoryEntry {
                 title: "Interview clip - x.com".into(),
@@ -152,6 +155,7 @@ impl Shot {
                 duration_secs: 95.0,
                 bpm: None,
                 key: None,
+                grid_nudge: None,
             },
         ];
         match self.scene.as_str() {
@@ -234,7 +238,7 @@ impl Shot {
             }
             "results" | "results-zoom" | "celebrate" | "export" | "chop" | "chop-grid"
             | "transform" | "kit" | "midi" | "midi-quantize" | "section-results" | "drums"
-            | "drums-running" | "drums-menu" | "vocals-clean" => {
+            | "drums-running" | "drums-menu" | "vocals-clean" | "analysis" | "analysis-chop" => {
                 let kinds = [
                     StemKind::Vocals,
                     StemKind::Drums,
@@ -244,7 +248,12 @@ impl Shot {
                 let stems = kinds
                     .iter()
                     .map(|k| {
-                        let audio = crate::demo::stem(*k);
+                        // The analysis scenes use the 96 s arrangement, so there are sections.
+                        let audio = if self.scene.starts_with("analysis") {
+                            crate::section::demo_arrangement(*k)
+                        } else {
+                            crate::demo::stem(*k)
+                        };
                         let env = Envelope::from_buffer(&audio, BUCKETS);
                         StemOut {
                             kind: *k,
@@ -294,6 +303,34 @@ impl Shot {
                     });
                 }
                 app.player.seek(12.1);
+                if self.scene.starts_with("analysis")
+                    && let Some(s) = &mut app.session
+                {
+                    // A nudged grid (shows the reset tag) and a clicked section.
+                    if let Some(a) = &mut s.analysis {
+                        a.nudge_by(0.010);
+                    }
+                    s.selection = s
+                        .analysis
+                        .as_ref()
+                        .and_then(|a| a.sections.get(1))
+                        .map(|x| (x.start, x.end));
+                    app.player.seek(s.selection.map_or(12.1, |x| x.0 + 3.0));
+                    if self.scene == "analysis-chop"
+                        && let Some(s) = &mut app.session
+                    {
+                        use crate::chop::{ChopMode, ChopSettings, GridChoice};
+                        s.chop.open = true;
+                        s.chop.settings = ChopSettings {
+                            stem: Some(StemKind::Other),
+                            mode: ChopMode::Grid,
+                            grid: GridChoice::Bar,
+                            region: s.selection,
+                            ..Default::default()
+                        };
+                        s.chop.retarget();
+                    }
+                }
                 if let Some(s) = &mut app.session
                     && self.scene.starts_with("chop")
                 {
@@ -337,7 +374,10 @@ impl Shot {
                     app.settings.export_format = crate::settings::ExportFormat::Flac24;
                     app.export_all_stems();
                 } else {
-                    if !self.scene.starts_with("chop") && !self.scene.starts_with("midi") {
+                    if !self.scene.starts_with("chop")
+                        && !self.scene.starts_with("midi")
+                        && !self.scene.starts_with("analysis")
+                    {
                         app.toasts.success("4 stems ready", crate::demo::DEMO_TITLE);
                     }
                 }

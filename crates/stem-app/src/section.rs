@@ -455,6 +455,24 @@ pub fn demo_mix() -> AudioBuffer {
 mod tests {
     use super::*;
 
+    /// The demo arrangement is intro / verse / break / verse / outro: the repeat shares a
+    /// letter, lands on the bar lines, and is the likely chorus.
+    #[test]
+    fn demo_song_sections() {
+        let a = crate::analysis::analyze_stems(&[(StemKind::Other, &demo_mix())]).unwrap();
+        let letters: String = a.sections.iter().map(|s| s.letter()).collect();
+        assert_eq!(letters, "ABCBD", "{:?}", a.sections);
+        let g = a.grid.as_ref().unwrap();
+        let bars: Vec<f64> = a
+            .sections
+            .iter()
+            .map(|s| g.bars_between(s.start, s.end).round())
+            .collect();
+        assert_eq!(bars, [4.0, 12.0, 4.0, 12.0, 4.0]);
+        assert_eq!(stem_audio::sections::chorus_label(&a.sections), Some(1));
+        assert!(a.chords.iter().any(|c| c.chord.is_some()));
+    }
+
     fn ramp(sr: u32, secs: f64) -> AudioBuffer {
         let n = (sr as f64 * secs) as usize;
         let ch: Vec<f32> = (0..n).map(|i| i as f32).collect();
@@ -562,6 +580,7 @@ mod tests {
                         beats_per_bar: 4,
                     }),
                     detected_bpm: None,
+                    ..Default::default()
                 }),
                 duration: secs,
                 audio: Arc::new(vec![mix]),

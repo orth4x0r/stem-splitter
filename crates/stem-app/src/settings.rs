@@ -183,6 +183,9 @@ pub struct HistoryEntry {
     /// "A minor".
     #[serde(default)]
     pub key: Option<String>,
+    /// Beat-grid nudge (shift / bar 1), re-applied when the split is reopened.
+    #[serde(default)]
+    pub grid_nudge: Option<crate::analysis::GridNudge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

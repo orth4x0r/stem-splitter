@@ -20,6 +20,8 @@ use crate::widgets::toast::elide;
 const CARD_H: f32 = 562.0;
 const PAD: f32 = 30.0;
 const WAVE_H: f32 = 200.0;
+/// Section lane between the bar ruler and the waveform (taken out of the waveform's height).
+const SECTIONS_H: f32 = 20.0;
 /// Grab distance around a handle, in points.
 const GRAB: f32 = 10.0;
 
@@ -57,6 +59,7 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
     let mut split = false;
     let mut cancel = false;
     let mut toggle_play = false;
+    let mut section_seek = None;
     ui.vertical_centered(|ui| {
         ui.set_max_width(w);
         let free_h = ui.ctx().content_rect().height() - 64.0 - 52.0 - CARD_H - 40.0;
@@ -120,9 +123,25 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
             pos2(inner.left(), card.top() + 122.0),
             vec2(inner.width(), 18.0),
         );
-        let wave = Rect::from_min_size(
+        let sections = pick
+            .prep
+            .analysis
+            .as_ref()
+            .map(|a| a.sections.clone())
+            .filter(|v| v.len() > 1)
+            .unwrap_or_default();
+        let lane_h = if sections.is_empty() {
+            0.0
+        } else {
+            SECTIONS_H + 4.0
+        };
+        let lane = Rect::from_min_size(
             pos2(inner.left(), ruler.bottom() + 4.0),
-            vec2(inner.width(), WAVE_H),
+            vec2(inner.width(), SECTIONS_H),
+        );
+        let wave = Rect::from_min_size(
+            pos2(inner.left(), ruler.bottom() + 4.0 + lane_h),
+            vec2(inner.width(), WAVE_H - lane_h),
         );
         let resp = ui.interact(wave, Id::unique("section-wave"), Sense::click_and_drag());
         let dur = pick.prep.duration.max(1e-6);
@@ -159,6 +178,25 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         }
 
         draw_bar_ruler(&p, ruler, pick);
+        if !sections.is_empty() {
+            let chorus = stem_audio::sections::chorus_label(&sections);
+            if let Some(c) = crate::widgets::structure::sections_lane(
+                ui,
+                Id::unique("section-lanes"),
+                lane,
+                &sections,
+                chorus,
+                pick.grid(),
+                Some(pick.sel),
+                &to_x,
+            ) {
+                let (a, b) = c.apply(Some(pick.sel));
+                if b - a >= crate::section::MIN_SECS {
+                    pick.sel = (a, b);
+                    section_seek = Some(a);
+                }
+            }
+        }
         let wp = ui.painter_at(wave.expand(8.0));
         draw_wave(&wp, wave, pick, xa, xb, t);
         draw_selection(&wp, wave, xa, xb, t);
@@ -348,6 +386,9 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
 
         if let Some(pos) = seek {
             app.player.seek(to_t(pos.x));
+        }
+        if let Some(t) = section_seek {
+            app.player.seek(t);
         }
 
         ui.add_space(14.0);
