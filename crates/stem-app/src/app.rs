@@ -210,6 +210,8 @@ pub struct StemApp {
     pub refine: Option<crate::refine::RefineJob>,
     /// Where the picker should start once the pre-split step finishes.
     pending_preset: Option<crate::section::SplitRange>,
+    /// Sample search typed into the URL box (YouTube / SoundCloud via yt-dlp).
+    pub search: crate::views::search::Search,
 }
 
 /// Frame-time statistics, printed when `STEM_PERF` is set.
@@ -285,6 +287,7 @@ impl StemApp {
             section: None,
             refine: None,
             pending_preset: None,
+            search: Default::default(),
         };
         theme::motion::set_reduced(app.settings.reduce_motion);
         let intro = app.settings.intro && shot.as_ref().is_none_or(|s| s.scene == "splash");
@@ -421,6 +424,7 @@ impl StemApp {
             range: None,
             title,
             chain,
+            quality: self.settings.split_quality,
         };
         Some((id, cancel, req))
     }
@@ -708,16 +712,15 @@ impl StemApp {
         let audio = Arc::new(audio);
         self.player.load(audio.clone());
         let mut analysis = out.analysis;
-        // Keep a halve / double the user picked last time.
-        if let (Some(a), Some(saved)) = (
+        // Keep a halve / double and a grid nudge the user picked last time.
+        if let (Some(a), Some(h)) = (
             &mut analysis,
             self.settings
                 .history
                 .iter()
-                .find(|h| h.out_dir == out.out_dir)
-                .and_then(|h| h.bpm),
+                .find(|h| h.out_dir == out.out_dir),
         ) {
-            a.apply_saved_bpm(saved);
+            a.restore(h.bpm, h.grid_nudge);
         }
         let timeline = crate::timeline::Timeline::new(duration, audio.clone());
         let chop = crate::chop::ChopState::load(&out.out_dir);
@@ -1151,6 +1154,7 @@ impl StemApp {
                         duration_secs: out.stems.first().map_or(0.0, |s| s.audio.duration_secs()),
                         bpm,
                         key,
+                        grid_nudge: None,
                     };
                     self.settings.push_history(entry.clone());
                     self.toasts
@@ -1283,6 +1287,7 @@ impl eframe::App for StemApp {
         theme::motion::set_reduced(self.settings.reduce_motion);
         self.pump(now);
         crate::fx::poll(self);
+        views::search::poll(self);
         self.handle_drops(&ctx, now);
         self.tick_queue(now);
         self.sync_player(dt);
@@ -1327,6 +1332,7 @@ impl eframe::App for StemApp {
             || self.drop_hover
             || !self.model_downloads.is_empty()
             || self.ytdlp_busy
+            || self.search.is_busy()
             || self.ffmpeg.busy
             || self.export_busy
             || self.queue.has_work()

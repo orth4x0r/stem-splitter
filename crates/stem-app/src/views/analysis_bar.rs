@@ -1,5 +1,5 @@
 //! Results-page pieces for music analysis: the BPM · key · Camelot chips with halve / double,
-//! the snap control, and the overview strip in the transport bar.
+//! the beat-grid nudge, the snap control, and the overview strip in the transport bar.
 
 use eframe::egui::{self, Rect, vec2};
 
@@ -17,8 +17,10 @@ pub fn chips(app: &mut StemApp, ui: &mut egui::Ui) {
     } else {
         ui.data(|d| d.get_temp::<f64>(egui::Id::unique("stem-shot/playing")))
     };
+    let playhead = app.player.position();
     let Some(s) = &mut app.session else { return };
     let mut rescale = None;
+    let mut edit = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         match &s.analysis {
@@ -64,12 +66,16 @@ pub fn chips(app: &mut StemApp, ui: &mut egui::Ui) {
                     {
                         rescale = Some(0.5);
                     }
-                    ui.spacing_mut().item_spacing.x = 8.0;
                     if buttons::letter_toggle(ui, "×2", 24.0, false, theme::PINK, "Double tempo")
                         .clicked()
                     {
                         rescale = Some(2.0);
                     }
+                    if a.grid.is_some() {
+                        ui.add_space(4.0);
+                        edit = nudge_controls(ui, a, playhead);
+                    }
+                    ui.spacing_mut().item_spacing.x = 8.0;
                     ui.add_space(6.0);
                 }
                 if let Some(k) = a.key {
@@ -92,18 +98,129 @@ pub fn chips(app: &mut StemApp, ui: &mut egui::Ui) {
             buttons::segmented(ui, "snap", &mut app.settings.snap, &opts);
         }
     });
-    if let Some(f) = rescale
-        && let Some(a) = &mut s.analysis
-        && a.rescale(f)
-        && let Some(bpm) = a.bpm()
-        && let Some(h) = app
-            .settings
-            .history
-            .iter_mut()
-            .find(|h| h.out_dir == s.out_dir)
-    {
-        h.bpm = Some(bpm);
+    let Some(a) = &mut s.analysis else { return };
+    let changed = match (rescale, edit) {
+        (Some(f), _) => a.rescale(f),
+        (None, Some(GridEdit::Shift(dt))) => a.nudge_by(dt),
+        (None, Some(GridEdit::Beats(n))) => a.shift_bar(n),
+        (None, Some(GridEdit::BarOne(t))) => a.set_bar_one(t),
+        (None, Some(GridEdit::Reset)) => {
+            a.reset_nudge();
+            true
+        }
+        (None, None) => false,
+    };
+    if !changed {
+        return;
     }
+    // Grid-mode chops follow the new grid; the choice is remembered with the split.
+    s.chop.changed();
+    if let Some(h) = app
+        .settings
+        .history
+        .iter_mut()
+        .find(|h| h.out_dir == s.out_dir)
+    {
+        h.bpm = a.bpm().or(h.bpm);
+        h.grid_nudge = (!a.nudge.is_zero()).then_some(a.nudge);
+    }
+}
+
+/// A beat-grid edit from the nudge controls.
+#[derive(Clone, Copy)]
+enum GridEdit {
+    /// Move every beat by this many seconds.
+    Shift(f64),
+    /// Move the bar lines by whole beats.
+    Beats(i64),
+    /// Bar 1 at the beat nearest this time.
+    BarOne(f64),
+    Reset,
+}
+
+/// Grid nudge step.
+const NUDGE_SECS: f64 = 0.005;
+
+/// ‹ › (5 ms, Shift: one beat), "1" (bar 1 at the playhead) and, once nudged, a reset tag.
+fn nudge_controls(
+    ui: &mut egui::Ui,
+    a: &crate::analysis::TrackAnalysis,
+    playhead: f64,
+) -> Option<GridEdit> {
+    let shift = ui.input(|i| i.modifiers.shift);
+    let mut edit = None;
+    let step = |dir: i64| {
+        if shift {
+            GridEdit::Beats(dir)
+        } else {
+            GridEdit::Shift(dir as f64 * NUDGE_SECS)
+        }
+    };
+    if buttons::letter_toggle(
+        ui,
+        "‹",
+        24.0,
+        false,
+        theme::PINK,
+        "Move the beat grid 5 ms earlier · Shift: bar lines one beat earlier",
+    )
+    .clicked()
+    {
+        edit = Some(step(-1));
+    }
+    if buttons::letter_toggle(
+        ui,
+        "›",
+        24.0,
+        false,
+        theme::PINK,
+        "Move the beat grid 5 ms later · Shift: bar lines one beat later",
+    )
+    .clicked()
+    {
+        edit = Some(step(1));
+    }
+    if buttons::letter_toggle(
+        ui,
+        "1",
+        24.0,
+        false,
+        theme::PINK,
+        "Set bar 1 here: the beat nearest the playhead starts a bar",
+    )
+    .clicked()
+    {
+        edit = Some(GridEdit::BarOne(playhead));
+    }
+    let n = a.nudge;
+    if !n.is_zero() {
+        let mut parts = Vec::new();
+        if n.offset.abs() >= 0.0005 {
+            parts.push(format!("{:+.0} ms", n.offset * 1000.0));
+        }
+        if n.downbeat_at.is_some() {
+            parts.push("bar 1".to_owned());
+        }
+        if parts.is_empty() {
+            parts.push("0 ms".to_owned());
+        }
+        ui.add_space(2.0);
+        let r = ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{} ↺", parts.join(" · ")))
+                        .font(theme::mono(11.0))
+                        .color(theme::TEXT_FAINT),
+                )
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Beat grid moved by hand · click to put it back");
+        if r.clicked() {
+            edit = Some(GridEdit::Reset);
+        }
+    }
+    edit
 }
 
 /// Overview strip at the top of the transport bar.

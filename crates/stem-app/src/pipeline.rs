@@ -123,6 +123,8 @@ pub struct JobRequest {
     pub title: Option<String>,
     /// Run a preset's chain (through the stem cache) instead of the single `model`.
     pub chain: Option<chain::ChainSpec>,
+    /// Chunk overlap for every model run.
+    pub quality: crate::quality::SplitQuality,
 }
 
 pub struct StemOut {
@@ -236,6 +238,7 @@ fn model_progress(send: Emit<'_>) -> impl FnMut(Progress) + '_ {
         Progress::Downloading { fraction } => send(JobEvent::Progress(fraction)),
         Progress::LoadingModel => send(JobEvent::Progress(None)),
         Progress::Separating(f) => send(JobEvent::Progress(Some(f))),
+        Progress::RetryingOnCpu(_) => send(JobEvent::Progress(Some(0.0))),
     }
 }
 
@@ -316,31 +319,35 @@ fn run_real(req: &JobRequest, cancel: &AtomicBool, send: Emit<'_>) -> Result<Job
         mgr.download(&req.model, &mut model_progress(send), cancel)
             .map_err(|e| e.to_string())?
     };
-    send(JobEvent::Stage(
-        Stage::PreparingModel,
-        format!("Loading {}", req.model.name),
-    ));
-    send(JobEvent::Progress(None));
-    let mut lease = crate::model_cache::take(&req.model, &model_path, req.device)?;
-    let sep = &mut lease.sep;
     check(cancel)?;
 
-    // 4. Separate
-    let on = match sep.active_device() {
-        Device::Cpu if req.device != Device::Cpu => "CPU (GPU unavailable)",
-        Device::Cpu => "CPU",
-        _ => "GPU · DirectML",
-    };
-    send(JobEvent::Stage(
-        Stage::Separating,
-        format!("{} on {on}", req.model.name),
-    ));
-    send(JobEvent::Progress(Some(0.0)));
-    let stems = sep
-        .separate(&cut.audio, &mut model_progress(send), cancel)
-        .map_err(|e| e.to_string())?;
-    // Kept loaded for the next split (queue, chain, "split again").
-    crate::model_cache::park(lease);
+    // 4. Load and separate (on the CPU if this model failed on the GPU lately; a GPU failure
+    // now is retried on the CPU and remembered).
+    let runner = chain::OrtRunner::with(&req.paths, req.device, req.quality);
+    let name = req.model.name;
+    let last = std::cell::RefCell::new(String::new());
+    let stems = runner.run_loaded(
+        &req.model,
+        &model_path,
+        &cut.audio,
+        &|detail, f| {
+            let (stage, text) = match detail {
+                "loading" => (Stage::PreparingModel, format!("Loading {name}")),
+                "" => (Stage::Separating, format!("{name} on GPU · DirectML")),
+                d => (Stage::Separating, format!("{name} · {d}")),
+            };
+            if *last.borrow() != text {
+                send(JobEvent::Stage(stage, text.clone()));
+                *last.borrow_mut() = text;
+            }
+            send(JobEvent::Progress(if stage == Stage::Separating {
+                f
+            } else {
+                None
+            }));
+        },
+        cancel,
+    )?;
     let stems = cut.trim(stems);
     check(cancel)?;
 
@@ -799,6 +806,7 @@ mod tests {
             range: None,
             title: None,
             chain: None,
+            quality: Default::default(),
         };
         let cancel = AtomicBool::new(false);
         let out = run_real(&req, &cancel, &|ev| {

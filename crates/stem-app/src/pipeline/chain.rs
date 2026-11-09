@@ -8,6 +8,8 @@
 //! The chain logic ([`execute`]) is independent of how a model runs: [`Runner`] does the
 //! separating (ONNX Runtime for real jobs, synthetic stems in demo mode and in tests).
 
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -18,6 +20,8 @@ use stem_models::{Device, ModelInfo, ModelManager, Progress, StemKind};
 
 use super::cache::{self, StemCache};
 use super::{Emit, InputSource, JobEvent, JobOutput, JobRequest, Stage, check, write_stems};
+use crate::gpu_health::{self, GpuFailure};
+use crate::quality::SplitQuality;
 
 /// "Mel-RoFormer Vocals (Kim)" -> "Mel-RoFormer", "MDX-Net Kim Vocal 2" -> "MDX Kim Vocal 2":
 /// short enough for progress lines and chain diagrams.
@@ -206,6 +210,11 @@ pub trait Runner {
     fn prepare(&mut self, _emit: &dyn Fn(&str, Option<f32>)) -> Result<(), String> {
         Ok(())
     }
+    /// Extra cache-key part for `model`'s runs (e.g. a non-default overlap), so results made
+    /// with other settings aren't reused.
+    fn cache_tag(&self, _model: &ModelInfo) -> Option<String> {
+        None
+    }
     /// Separate `input` with `model`. `emit(detail, fraction)` reports progress within this run.
     fn separate(
         &mut self,
@@ -268,7 +277,10 @@ pub fn execute(
         let mut runs: Vec<(Vec<(StemKind, AudioBuffer)>, String)> = Vec::new();
         for id in &step.models {
             let model = spec.find(id).ok_or_else(|| format!("unknown model {id}"))?;
-            let run_key = cache::key(&[&in_key, model.id]);
+            let run_key = match runner.cache_tag(&model) {
+                Some(tag) => cache::key(&[&in_key, model.id, &tag]),
+                None => cache::key(&[&in_key, model.id]),
+            };
             let prefix = if n_steps > 1 {
                 format!("Step {}/{n_steps} · ", i + 1)
             } else {
@@ -507,21 +519,101 @@ impl Runner for DemoRunner {
 }
 
 /// ONNX Runtime: makes sure the runtime and each model are downloaded, loads and runs it.
-pub(super) struct OrtRunner {
+///
+/// GPU failures are remembered per (model, adapter) in [`crate::gpu_health`]: a model that failed
+/// on DirectML in the last 7 days goes straight to the CPU.
+pub(crate) struct OrtRunner {
     mgr: ModelManager,
     device: Device,
+    quality: SplitQuality,
+    /// The `gpu_health` file.
+    health: PathBuf,
 }
 
 impl OrtRunner {
     fn new(req: &JobRequest) -> Self {
-        Self::with(&req.paths, req.device)
+        Self::with(&req.paths, req.device, req.quality)
     }
 
-    pub(super) fn with(paths: &crate::paths::AppPaths, device: Device) -> Self {
+    pub(crate) fn with(
+        paths: &crate::paths::AppPaths,
+        device: Device,
+        quality: SplitQuality,
+    ) -> Self {
         Self {
             mgr: ModelManager::new(paths.models.clone()),
             device,
+            quality,
+            health: gpu_health::file(&paths.data),
         }
+    }
+
+    /// Load the downloaded `model` at `path` and separate `input`, on the CPU when this model
+    /// failed on the GPU lately, and remembering a GPU failure (`stem_models` already retried
+    /// it on the CPU) for next time.
+    pub(crate) fn run_loaded(
+        &self,
+        model: &ModelInfo,
+        path: &std::path::Path,
+        input: &AudioBuffer,
+        emit: &dyn Fn(&str, Option<f32>),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<(StemKind, AudioBuffer)>, String> {
+        let now = crate::settings::now_unix();
+        let adapter = gpu_health::adapter_for(self.device);
+        let remembered = adapter
+            .as_deref()
+            .and_then(|a| gpu_health::lookup(&self.health, model.id, a, now));
+        let device = if remembered.is_some() {
+            Device::Cpu
+        } else {
+            self.device
+        };
+        emit("loading", Some(0.0));
+        let options = self.quality.load_options(&model.arch);
+        let _awake = crate::awake::KeepAwake::new();
+        let mut lease = crate::model_cache::take(model, path, device, &options)?;
+        let sep = &mut lease.sep;
+        let on = Cell::new(match sep.active_device() {
+            // Short: the progress line also names the step and model.
+            Device::Cpu if remembered.is_some() => "CPU (GPU failed recently)",
+            Device::Cpu if self.device != Device::Cpu => "CPU fallback",
+            Device::Cpu => "CPU",
+            _ => "",
+        });
+        let failure = RefCell::new(None::<String>);
+        let result = sep.separate(
+            input,
+            &mut |p| match p {
+                Progress::Separating(f) => emit(on.get(), Some(f)),
+                Progress::LoadingModel => emit("loading", Some(0.0)),
+                Progress::RetryingOnCpu(why) => {
+                    on.set("CPU (GPU failed)");
+                    emit("GPU failed, retrying on CPU", Some(0.0));
+                    *failure.borrow_mut() = Some(why);
+                }
+                Progress::Downloading { .. } => {}
+            },
+            cancel,
+        );
+        let failure = failure.into_inner();
+        // Kept loaded for the next split (queue, chain, "split again"), unless it just fell
+        // back to the CPU.
+        if result.is_ok() && failure.is_none() {
+            crate::model_cache::park(lease);
+        }
+        if let (Some(reason), Some(adapter)) = (failure, adapter) {
+            gpu_health::update(&self.health, now, |f| {
+                f.record(GpuFailure {
+                    model_id: model.id.to_owned(),
+                    model_name: model.name.to_owned(),
+                    adapter,
+                    when: now,
+                    reason,
+                })
+            });
+        }
+        result.map_err(|e| e.to_string())
     }
 }
 
@@ -539,6 +631,10 @@ impl Runner for OrtRunner {
                 }
             })
             .map_err(|e| e.to_string())
+    }
+
+    fn cache_tag(&self, model: &ModelInfo) -> Option<String> {
+        self.quality.cache_tag(&model.arch)
     }
 
     fn separate(
@@ -564,29 +660,7 @@ impl Runner for OrtRunner {
                 .map_err(|e| e.to_string())?
         };
         check(cancel)?;
-        emit("loading", Some(0.0));
-        let _awake = crate::awake::KeepAwake::new();
-        let mut lease = crate::model_cache::take(model, &path, self.device)?;
-        let sep = &mut lease.sep;
-        let on = match sep.active_device() {
-            // Short: the progress line also names the step and model.
-            Device::Cpu if self.device != Device::Cpu => "CPU fallback",
-            Device::Cpu => "CPU",
-            _ => "",
-        };
-        let stems = sep
-            .separate(
-                input,
-                &mut |p| match p {
-                    Progress::Separating(f) => emit(on, Some(f)),
-                    Progress::LoadingModel => emit("loading", Some(0.0)),
-                    Progress::Downloading { .. } => {}
-                },
-                cancel,
-            )
-            .map_err(|e| e.to_string())?;
-        crate::model_cache::park(lease);
-        Ok(stems)
+        self.run_loaded(model, &path, input, emit, cancel)
     }
 }
 
@@ -878,6 +952,7 @@ mod tests {
             range: None,
             title: None,
             chain: Some(spec.clone()),
+            quality: Default::default(),
         };
         let never = AtomicBool::new(false);
         let details = RefCell::new(Vec::<String>::new());
@@ -886,7 +961,9 @@ mod tests {
                 details.borrow_mut().push(d);
             }
         };
+        let t_first = std::time::Instant::now();
         let out = run(&req, &spec, &never, &send).unwrap();
+        let first_secs = t_first.elapsed().as_secs_f32();
         let kinds: Vec<_> = out.stems.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, vec![Vocals, Drums, Bass, Other]);
         for s in &out.stems {
@@ -907,8 +984,14 @@ mod tests {
             .filter(|d| d.contains("cached"))
             .count();
         assert_eq!(cached, 2, "{:?}", details.borrow());
-        // The fake model runs take ~4 s; cached ones skip them.
-        assert!(t0.elapsed().as_secs_f32() < 3.0);
+        // The fake model runs take ~4 s; cached ones skip them. Compare against the first run
+        // rather than a fixed limit: both runs also do the track analysis, which is slow in
+        // debug builds on CI runners.
+        let second_secs = t0.elapsed().as_secs_f32();
+        assert!(
+            second_secs < first_secs - 2.0,
+            "first {first_secs:.2} s, cached {second_secs:.2} s"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
         for o in [out.out_dir, again.out_dir] {
             let _ = std::fs::remove_dir_all(o);

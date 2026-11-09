@@ -15,6 +15,7 @@
 //!   the tracked beats are replaced by a least-squares straight grid, which is what you want to
 //!   snap sample edges to. The downbeat is the beat phase (mod 4) with the strongest low-band
 //!   (kick) onsets.
+//! - **Sections** and **chords**: see [`crate::sections`] and [`crate::chords`].
 //! - **Key**: a chroma vector (pitch-class energy, tuning-compensated) correlated against the
 //!   24 rotations of the Krumhansl-Kessler and Temperley key profiles.
 
@@ -91,6 +92,10 @@ pub struct Analysis {
     pub tempo: Option<Tempo>,
     pub grid: Option<BeatGrid>,
     pub key: Option<Key>,
+    /// Song sections on bar lines, covering the whole track.
+    pub sections: Vec<crate::sections::Section>,
+    /// Chords per beat run, covering the whole track.
+    pub chords: Vec<crate::chords::ChordSpan>,
 }
 
 const MAJOR_NAMES: [&str; 12] = [
@@ -285,8 +290,8 @@ impl BeatGrid {
 
 // ---- front door ----------------------------------------------------------------------------
 
-/// Tempo and beats from `rhythm` (ideally the drums stem), key from `harmony` (the
-/// instrumental without drums, or the mix).
+/// Tempo and beats from `rhythm` (ideally the drums stem), key and chords from `harmony` (the
+/// instrumental without drums, or the mix), sections from both.
 pub fn analyze(rhythm: &AudioBuffer, harmony: &AudioBuffer) -> Analysis {
     let env = onset_envelope(rhythm);
     let tempo = estimate_tempo(&env);
@@ -296,17 +301,20 @@ pub fn analyze(rhythm: &AudioBuffer, harmony: &AudioBuffer) -> Analysis {
         (Some(t), Some(g)) => Some(Tempo { bpm: g.bpm, ..t }),
         (t, _) => t,
     };
+    let feats = crate::beatsync::beat_features(rhythm, harmony, grid.as_ref());
     Analysis {
         tempo,
-        grid,
         key: detect_key(harmony),
+        sections: crate::sections::detect_sections(&feats),
+        chords: crate::chords::detect_chords(&feats),
+        grid,
     }
 }
 
 // ---- shared helpers ------------------------------------------------------------------------
 
 /// Mono downmix, decimated by 2 while the rate is above 32 kHz (binomial pre-filter).
-fn mono_low_rate(buf: &AudioBuffer) -> (Vec<f32>, f32) {
+pub(crate) fn mono_low_rate(buf: &AudioBuffer) -> (Vec<f32>, f32) {
     let n = buf.frames();
     let ch = buf.n_channels().max(1) as f32;
     let mut mono: Vec<f32> = (0..n)
@@ -329,7 +337,12 @@ fn mono_low_rate(buf: &AudioBuffer) -> (Vec<f32>, f32) {
 
 /// Magnitude spectra of `x`, one frame every `hop` samples with frames centred on
 /// `f * hop` (zero-padded at the edges). Calls `each(frame_index, magnitudes)`.
-fn for_each_spectrum(x: &[f32], n_fft: usize, hop: usize, mut each: impl FnMut(usize, &[f32])) {
+pub(crate) fn for_each_spectrum(
+    x: &[f32],
+    n_fft: usize,
+    hop: usize,
+    mut each: impl FnMut(usize, &[f32]),
+) {
     let mut planner = RealFftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n_fft);
     let window = crate::stft::hann_window(n_fft);

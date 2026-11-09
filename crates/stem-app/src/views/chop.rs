@@ -807,6 +807,33 @@ fn export_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, it: &mut Intent
 
 fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mut Intents) {
     let Some(s) = &mut app.session else { return };
+    let sr = s
+        .audio
+        .get(s.chop.track)
+        .map_or(44_100.0, |a| a.sample_rate.max(1) as f64);
+    // "Section B · Am · F" per slice, from the analysis.
+    let tips: Vec<Option<String>> = match &s.analysis {
+        Some(a) => s
+            .chop
+            .slices
+            .iter()
+            .map(|sl| {
+                let (t0, t1) = (sl.start as f64 / sr, sl.end as f64 / sr);
+                let mut parts = Vec::new();
+                if a.sections.len() > 1
+                    && let Some(sec) = a.section_at(0.5 * (t0 + t1))
+                {
+                    parts.push(format!("Section {}", sec.letter()));
+                }
+                let chords = a.chords_label(t0, t1);
+                if !chords.is_empty() {
+                    parts.push(chords);
+                }
+                (!parts.is_empty()).then(|| parts.join(" · "))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     let chop = &mut s.chop;
     card(ui, rect, theme::PINK);
     let inner = rect.shrink2(vec2(18.0, 16.0));
@@ -892,6 +919,7 @@ fn pads_card(app: &mut StemApp, ui: &mut egui::Ui, rect: Rect, now: f64, it: &mu
                 secs: chop_ref.pads.get(i).map_or(0.0, |p| p.duration_secs()),
                 linked: has && linked == Some(i),
                 enter: enter(n),
+                tip: tips.get(i).cloned().flatten(),
             }
         })
     };

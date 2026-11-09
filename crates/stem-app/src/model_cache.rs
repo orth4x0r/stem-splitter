@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
-use stem_models::{Device, ModelInfo, Separator};
+use stem_models::{Device, LoadOptions, ModelInfo, Separator};
 
 /// How long an unused model stays loaded.
 const IDLE: Duration = Duration::from_secs(5 * 60);
@@ -20,11 +20,12 @@ struct Key {
     model: &'static str,
     path: PathBuf,
     device: Device,
+    options: LoadOptions,
     file: Option<(u64, SystemTime)>,
 }
 
 impl Key {
-    fn new(info: &ModelInfo, path: &Path, device: Device) -> Self {
+    fn new(info: &ModelInfo, path: &Path, device: Device, options: &LoadOptions) -> Self {
         let file = std::fs::metadata(path)
             .ok()
             .and_then(|m| Some((m.len(), m.modified().ok()?)));
@@ -32,6 +33,7 @@ impl Key {
             model: info.id,
             path: path.to_path_buf(),
             device,
+            options: options.clone(),
             file,
         }
     }
@@ -49,11 +51,16 @@ fn slot() -> std::sync::MutexGuard<'static, Option<Entry>> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The cached separator for (`info`, `path`, `device`), or a freshly loaded one. Hand it back
-/// with [`park`] when done; while it is out, other jobs load their own.
-pub fn take(info: &ModelInfo, path: &Path, device: Device) -> Result<Lease, String> {
-    take_with(info, path, device, |i, p, d| {
-        stem_models::load(i, p, d).map_err(|e| e.to_string())
+/// The cached separator for (`info`, `path`, `device`, `options`), or a freshly loaded one.
+/// Hand it back with [`park`] when done; while it is out, other jobs load their own.
+pub fn take(
+    info: &ModelInfo,
+    path: &Path,
+    device: Device,
+    options: &LoadOptions,
+) -> Result<Lease, String> {
+    take_with(info, path, device, options, |i, p, d| {
+        stem_models::load_with(i, p, d, options).map_err(|e| e.to_string())
     })
 }
 
@@ -61,9 +68,10 @@ fn take_with(
     info: &ModelInfo,
     path: &Path,
     device: Device,
+    options: &LoadOptions,
     load: impl FnOnce(&ModelInfo, &Path, Device) -> Result<Box<dyn Separator>, String>,
 ) -> Result<Lease, String> {
-    let key = Key::new(info, path, device);
+    let key = Key::new(info, path, device, options);
     let hit = {
         let mut s = slot();
         match s.take() {
@@ -148,27 +156,36 @@ mod tests {
         let a = stem_models::find_model("htdemucs").unwrap();
         let b = stem_models::find_model("mdx-inst-hq3").unwrap();
         let p = Path::new("/nonexistent/model.onnx");
+        let o = LoadOptions::default();
         let loads = std::cell::Cell::new(0);
         let load = |i: &ModelInfo, _: &Path, _: Device| -> Result<Box<dyn Separator>, String> {
             loads.set(loads.get() + 1);
             Ok(Box::new(Fake(i.clone())))
         };
         clear();
-        let l = take_with(&a, p, Device::Cpu, load).unwrap();
+        let l = take_with(&a, p, Device::Cpu, &o, load).unwrap();
         assert!(!l.cached);
         park(l);
-        let l = take_with(&a, p, Device::Cpu, load).unwrap();
+        let l = take_with(&a, p, Device::Cpu, &o, load).unwrap();
         assert!(l.cached, "same model, same device: no reload");
         park(l);
-        let l = take_with(&a, p, Device::DirectMl(0), load).unwrap();
+        let l = take_with(&a, p, Device::DirectMl(0), &o, load).unwrap();
         assert!(!l.cached, "another device reloads");
         park(l);
-        let l = take_with(&b, p, Device::DirectMl(0), load).unwrap();
+        let l = take_with(&b, p, Device::DirectMl(0), &o, load).unwrap();
         assert!(!l.cached && l.sep.info().id == b.id);
         // While leased, a second job gets its own copy.
-        let l2 = take_with(&b, p, Device::DirectMl(0), load).unwrap();
+        let l2 = take_with(&b, p, Device::DirectMl(0), &o, load).unwrap();
         assert!(!l2.cached);
-        assert_eq!(loads.get(), 4);
+        park(l2);
+        // Other load options (quality settings) reload.
+        let fast = LoadOptions {
+            overlap: Some(0.25),
+            ..Default::default()
+        };
+        let l3 = take_with(&b, p, Device::DirectMl(0), &fast, load).unwrap();
+        assert!(!l3.cached);
+        assert_eq!(loads.get(), 5);
         clear();
     }
 }

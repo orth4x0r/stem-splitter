@@ -188,6 +188,9 @@ pub fn page(app: &mut StemApp, ui: &mut egui::Ui) {
         "GPU (DirectML) is much faster. Auto picks the best adapter and falls back to CPU.",
         |ui| {
             super::models::device_picker(app, ui);
+            ui.add_space(8.0);
+            super::settings_processing::quality_row(app, ui);
+            super::settings_processing::gpu_failures_row(app, ui);
         },
     );
 

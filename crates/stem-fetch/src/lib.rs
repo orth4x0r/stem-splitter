@@ -9,6 +9,7 @@ mod http;
 mod names;
 mod playlist;
 mod process;
+mod search;
 #[cfg(test)]
 mod tests;
 mod tools;
@@ -21,6 +22,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use names::Source;
 pub use names::sanitize_file_stem;
 pub use playlist::{Playlist, PlaylistEntry, is_playlist_url, parse_flat_playlist};
+pub use search::{
+    InputKind, SEARCH_LIMIT, SearchResult, SearchSite, classify_input, parse_search_results,
+    search_target,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
@@ -188,6 +193,26 @@ impl Fetcher {
         let ytdlp = self.ensure_ytdlp(&mut |_| {})?;
         let args = playlist::args(url, self.cookies_from_browser.as_deref());
         playlist::run(&ytdlp, &args, cancel)
+    }
+
+    /// Search `site` for `query` (up to `limit` hits) without downloading anything, via
+    /// `yt-dlp --flat-playlist -J "ytsearchN:query"` / `"scsearchN:query"`. yt-dlp is
+    /// downloaded first if needed (reported through `progress`). Stops when `cancel` is set.
+    /// Browser cookies are not used: public search needs no login, and a locked Chromium
+    /// cookie store would only make it fail.
+    pub fn search(
+        &self,
+        site: SearchSite,
+        query: &str,
+        limit: usize,
+        progress: &mut dyn FnMut(FetchProgress),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<SearchResult>> {
+        let ytdlp = self.ensure_ytdlp(progress)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(FetchError::Cancelled);
+        }
+        search::run(&ytdlp, site, query, limit, cancel)
     }
 
     /// Path to a working yt-dlp, downloading it into `tools_dir` if missing.

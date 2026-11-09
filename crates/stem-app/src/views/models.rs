@@ -83,18 +83,24 @@ fn cards(
     let cols = if ui.available_width() > 760.0 { 2 } else { 1 };
     let cw = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
     let ch = 214.0;
+    let ram = crate::quality::total_ram_bytes();
     for row in models.chunks(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for m in row {
                 let (rect, resp) = ui.allocate_exact_size(vec2(cw, ch), Sense::click());
+                let ram_note = crate::quality::ram_note(&m.arch, ram);
+                let mut tip = if m.non_commercial {
+                    format!("License: {}\n{}", m.license, super::refine::NC_TIP)
+                } else {
+                    format!("License: {}", m.license)
+                };
+                if ram_note.is_some() {
+                    tip.push_str(RAM_TIP);
+                }
                 let resp = resp
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(if m.non_commercial {
-                        format!("License: {}\n{}", m.license, super::refine::NC_TIP)
-                    } else {
-                        format!("License: {}", m.license)
-                    });
+                    .on_hover_text(tip);
                 let sel = selected == Some(m.id);
                 let h = ui
                     .ctx()
@@ -269,6 +275,15 @@ fn cards(
                 for k in &m.stems {
                     buttons::chip(&mut cu, k.label(), theme::stem_color(*k), false);
                 }
+                if let Some(note) = &ram_note {
+                    ui.painter().text(
+                        pos2(chips.right(), chips.center().y),
+                        Align2::RIGHT_CENTER,
+                        note,
+                        theme::semi(11.5),
+                        theme::WARN,
+                    );
+                }
                 // Footer: status + action.
                 let foot = Rect::from_min_max(
                     pos2(rect.left() + 20.0, rect.bottom() - 58.0),
@@ -394,6 +409,10 @@ fn cards(
         ui.add_space(gap);
     }
 }
+
+/// Hover text on heavy models when this PC has little RAM.
+const RAM_TIP: &str = "\n\nThis is a large transformer and this PC has little RAM: a split can \
+                       use several GB, so close other apps (or pick SCNet) if it stalls or fails.";
 
 pub fn device_picker(app: &mut StemApp, ui: &mut egui::Ui) {
     overline(ui, "Run on");

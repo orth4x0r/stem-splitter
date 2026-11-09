@@ -302,6 +302,7 @@ mod tests {
             }),
             grid: None,
             detected_bpm: Some(90.0),
+            ..Default::default()
         };
         let m = wav_meta(Some(&a), false, Some((0, 10)));
         assert_eq!(m.tempo, Some(90.0));
